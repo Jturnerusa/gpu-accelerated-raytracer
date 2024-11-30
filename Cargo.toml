@@ -1,0 +1,15 @@
+[package]
+name = "wgpu-raytracer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wgpu = { git = "https://github.com/gfx-rs/wgpu", rev = "1a643291c2e8854ba7e4f5445a4388202731bfa1" }
+encase = { version = "0.10.0", features = ["nalgebra"] }
+winit = "0.30.5"
+nalgebra = { version = "0.33.2", features = ["serde-serialize"] }
+nalgebra-glm = "0.19.0"
+serde = { version = "1.0.215", features = ["derive"] }
+serde_json = "1.0.133"
+clap = { version = "4.5.21", features = ["derive"] }
+tokio = { version = "1.41.1", features = ["full"] }
