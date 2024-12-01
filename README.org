@@ -1,0 +1,2 @@
+* About
+A trivial ray tracer that utilizes the GPUs ray accelerators.
