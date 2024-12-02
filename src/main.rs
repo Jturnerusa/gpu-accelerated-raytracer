@@ -111,6 +111,7 @@ struct State<'surface, W> {
     index_buffer: wgpu::Buffer,
     materials_buffer: wgpu::Buffer,
     objects_buffer: wgpu::Buffer,
+    tlas_vertices_buffer: wgpu::Buffer,
     tlas: wgpu::TlasPackage,
     render_pipeline: wgpu::RenderPipeline,
     compute_pipeline: wgpu::ComputePipeline,
@@ -225,8 +226,25 @@ impl<'surface> State<'surface, &'surface winit::window::Window> {
         let lights_buffer =
             configure_buffer(&device, wgpu::BufferUsages::STORAGE, "lights", lights)?;
 
-        let tlas_package =
-            build_acceleration_structures(&device, &queue, &vertex_buffer, &index_buffer, objects);
+        let tlas_vertices = vertices
+            .iter()
+            .map(|vert| [vert.p.x, vert.p.y, vert.p.z])
+            .collect::<Vec<_>>();
+
+        let tlas_vertices_buffer = configure_buffer(
+            &device,
+            wgpu::BufferUsages::BLAS_INPUT,
+            "TLAS vertices",
+            tlas_vertices,
+        )?;
+
+        let tlas_package = build_acceleration_structures(
+            &device,
+            &queue,
+            &tlas_vertices_buffer,
+            &index_buffer,
+            objects,
+        );
 
         let texture = create_texture(&device, width, height);
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -469,6 +487,7 @@ impl<'surface> State<'surface, &'surface winit::window::Window> {
             index_buffer,
             materials_buffer,
             objects_buffer,
+            tlas_vertices_buffer,
             render_pipeline,
             compute_pipeline,
             bind_group,
@@ -911,7 +930,7 @@ fn build_acceleration_structures(
                 size: size_desc,
                 vertex_buffer,
                 first_vertex: object.vertex_start,
-                vertex_stride: Vertex::SHADER_SIZE.get(),
+                vertex_stride: std::mem::size_of::<[f32; 3]>() as u64,
                 index_buffer: Some(index_buffer),
                 // this seems to be an offset in bytes?
                 index_buffer_offset: Some(object.index_start as u64 * 4),
