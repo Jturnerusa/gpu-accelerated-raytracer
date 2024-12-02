@@ -245,14 +245,11 @@ fn get_intersection_tri(object: Object, intersection: RayIntersection) -> Tri {
 }
 
 fn get_interpolated_normal(tri: Tri, intersection: RayIntersection) -> vec3f {
-   let b = vec3f(1.0 - intersection.barycentrics.x - intersection.barycentrics.y,
-                intersection.barycentrics);
+   let v0v1 = tri.v1.p - tri.v0.p;
+   let v0v2 = tri.v2.p - tri.v0.p;
+   let n = cross(v0v1, v0v2);
 
-   let i = tri.v0.n * b.x
-           + tri.v1.n * b.y
-           + tri.v2.n * b.z;
-
-   return normalize(i);
+   return normalize(n);
 }
 
 fn ray_at(ray: Ray, t: f32) -> vec3f {
