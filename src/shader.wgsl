@@ -218,12 +218,29 @@ fn hit_lights(ray: Ray, light_hit: ptr<function, LightHit>) -> bool {
 }
 
 fn get_intersection_tri(object: Object, intersection: RayIntersection) -> Tri {
-   let first_index_index = intersection.primitive_index * 3u + object.index_start;
+   // offset into index buffer relative to the object hit.
+   let x = intersection.primitive_index * 3;
 
-   let v0 = VERTEX_BUFFER[object.vertex_start + INDEX_BUFFER[first_index_index]];
-   let v1 = VERTEX_BUFFER[object.vertex_start + INDEX_BUFFER[first_index_index + 1u]];
-   let v2 = VERTEX_BUFFER[object.vertex_start + INDEX_BUFFER[first_index_index + 2u]];
-   
+   // offset into the index buffer to read vertices from.
+   let first_index_index = x + object.index_start;
+
+   // indices from the index buffer
+   let i0 = INDEX_BUFFER[first_index_index];
+   let i1 = INDEX_BUFFER[first_index_index + 1u];
+   let i2 = INDEX_BUFFER[first_index_index + 2u];
+
+   // vertex indices, which is an index buffers index plus
+   // the objects vertex start index;
+   let vi0 = object.vertex_start + i0;
+   let vi1 = object.vertex_start + i1;
+   let vi2 = object.vertex_start + i2;   
+
+   // vertices, which are of type Vertex and not
+   // a vec3f.
+   let v0 = VERTEX_BUFFER[vi0];
+   let v1 = VERTEX_BUFFER[vi1];
+   let v2 = VERTEX_BUFFER[vi2];   
+
    return Tri(v0, v1, v2);
 }
 
