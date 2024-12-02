@@ -13,6 +13,7 @@ use std::{
 use clap::Parser;
 use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
 use nalgebra::{Matrix4, Perspective3, Vector3, Vector4};
+use wgpu::core::device::SHADER_STAGE_COUNT;
 use winit::application::ApplicationHandler;
 
 const WORKGROUP_SIZE_X: usize = 8;
@@ -228,8 +229,8 @@ impl<'surface> State<'surface, &'surface winit::window::Window> {
 
         let tlas_vertices = vertices
             .iter()
-            .map(|vert| [vert.p.x, vert.p.y, vert.p.z])
-            .collect::<Vec<_>>();
+            .map(|vert| vert.p)
+            .collect::<Vec<Vector3<f32>>>();
 
         let tlas_vertices_buffer = configure_buffer(
             &device,
@@ -930,7 +931,7 @@ fn build_acceleration_structures(
                 size: size_desc,
                 vertex_buffer,
                 first_vertex: object.vertex_start,
-                vertex_stride: std::mem::size_of::<[f32; 3]>() as u64,
+                vertex_stride: Vector3::<f32>::SHADER_SIZE.get(),
                 index_buffer: Some(index_buffer),
                 // this seems to be an offset in bytes?
                 index_buffer_offset: Some(object.index_start as u64 * 4),
