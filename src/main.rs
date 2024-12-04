@@ -11,9 +11,8 @@ use std::{
 };
 
 use clap::Parser;
-use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
+use encase::{ShaderType, StorageBuffer, UniformBuffer};
 use nalgebra::{Matrix4, Perspective3, Vector3, Vector4};
-use winit::application::ApplicationHandler;
 
 const WORKGROUP_SIZE_X: usize = 8;
 const WORKGROUP_SIZE_Y: usize = 8;
@@ -120,11 +119,11 @@ struct State<'surface, W> {
     uniforms: Uniforms,
 }
 
-impl<'surface> State<'surface, &'surface winit::window::Window> {
+impl<'surface> State<'surface, &'surface sdl2::video::Window> {
     async fn new<'data>(
         width: u32,
         height: u32,
-        window: &'surface winit::window::Window,
+        window: &'surface sdl2::video::Window,
         vertices: &'data [Vertex],
         indices: &'data [u32],
         materials: &'data [Material],
@@ -142,7 +141,9 @@ impl<'surface> State<'surface, &'surface winit::window::Window> {
             ..Default::default()
         });
 
-        let surface = instance.create_surface(window)?;
+        let surface = unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(window)?)?
+        };
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -497,7 +498,7 @@ impl<'surface> State<'surface, &'surface winit::window::Window> {
         })
     }
 
-    fn render(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn render(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let output = self.surface.get_current_texture()?;
 
         let view = output
@@ -543,7 +544,7 @@ impl<'surface> State<'surface, &'surface winit::window::Window> {
         Ok(())
     }
 
-    fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn compute(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -591,59 +592,20 @@ impl<'surface> State<'surface, &'surface winit::window::Window> {
     }
 }
 
-impl<'surface> ApplicationHandler for State<'surface, &'surface winit::window::Window> {
-    fn resumed(&mut self, _: &winit::event_loop::ActiveEventLoop) {}
-
-    fn window_event(
-        &mut self,
-        event_loop: &winit::event_loop::ActiveEventLoop,
-        _: winit::window::WindowId,
-        event: winit::event::WindowEvent,
-    ) {
-        match event {
-            winit::event::WindowEvent::RedrawRequested => {
-                match self.compute() {
-                    Ok(()) => (),
-                    Err(e) => {
-                        eprintln!("{e}");
-                        event_loop.exit();
-                    }
-                }
-                match self.render() {
-                    Ok(()) => (),
-                    Err(e) => {
-                        eprintln!("{e}");
-                        event_loop.exit();
-                    }
-                }
-                self.device.poll(wgpu::Maintain::Wait);
-                self.window.request_redraw();
-            }
-            winit::event::WindowEvent::KeyboardInput {
-                event:
-                    winit::event::KeyEvent {
-                        state: winit::event::ElementState::Pressed,
-                        physical_key:
-                            winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape),
-                        ..
-                    },
-                ..
-            } => {
-                event_loop.exit();
-            }
-            _ => (),
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     let height = (args.width as f32 / args.aspect_ratio) as u32;
     let scene = load_scene(&args.scene)?;
 
-    let event_loop = winit::event_loop::EventLoop::new()?;
-    let window = event_loop.create_window(winit::window::WindowAttributes::default())?;
+    let sdl_context = sdl2::init()?;
+    let sdl_video = sdl_context.video()?;
+    let window = sdl_video
+        .window("raytracer", args.width, height)
+        .position_centered()
+        .resizable()
+        .build()?;
+    let mut events = sdl_context.event_pump()?;
 
     let mut state = State::new(
         args.width,
@@ -668,7 +630,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .await?;
 
-    event_loop.run_app(&mut state)?;
+    'main: loop {
+        state.compute()?;
+        state.render()?;
+
+        for event in events.poll_iter() {
+            match event {
+                sdl2::event::Event::Quit { .. }
+                | sdl2::event::Event::KeyDown {
+                    keycode: Some(sdl2::keyboard::Keycode::ESCAPE),
+                    ..
+                } => break 'main,
+                _ => continue,
+            }
+        }
+
+        state.device.poll(wgpu::Maintain::Wait);
+    }
 
     Ok(())
 }
