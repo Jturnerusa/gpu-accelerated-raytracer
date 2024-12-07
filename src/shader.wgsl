@@ -37,7 +37,7 @@ var<private> VERTS: array<vec2f, 6> = array (
   vec2f(1.0, 1.0),
   vec2f(-1.0, -1.0),
   vec2f(1.0, -1.0)
-);
+  );
 
 struct Uniforms {
     view: mat4x4f,
@@ -113,9 +113,9 @@ fn random_unit_vec() -> vec3f {
     loop {
       r = vec3f(rand() - rand(), rand() - rand(), rand() - rand());
       if dot(r, r) <= 1.0 {
-        break;
+          break;
       } else {
-        continue;
+          continue;
       }
     }
     return normalize(r);
@@ -127,9 +127,9 @@ fn ray_at(ray: Ray, t: f32) -> vec3f {
 
 fn cast_ray(pixel: vec2f) -> Ray {
     let clip = pixel
-               / vec2f(f32(UNIFORMS.width), f32(UNIFORMS.height))
-               * 2.0
-               - 1.0;
+        / vec2f(f32(UNIFORMS.width), f32(UNIFORMS.height))
+        * 2.0
+        - 1.0;
     let camera = UNIFORMS.perspective * vec4f(clip.x, -clip.y, 0.0, 1.0);
     let direction = UNIFORMS.view * vec4f(normalize(camera).xyz, 0.0);
     let origin = UNIFORMS.view * vec4f(0.0, 0.0, 0.0, 1.0);
