@@ -1,14 +1,12 @@
-use std::{collections::HashMap, iter, sync};
+use std::{collections::HashMap, io::Write, iter, num::NonZero, sync};
 
-use encase::{ShaderSize, ShaderType, StorageBuffer, UniformBuffer};
-use nalgebra::Matrix4;
+use crate::scene::{Material, Mesh, Object, Primitive, Scene, Vertex};
 
-use crate::scene::{Camera, Material, Mesh, Object, Primitive, Vertex};
-
-#[derive(Clone, Copy, Debug, encase::ShaderType)]
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
-    view: Matrix4<f32>,
-    perspective: Matrix4<f32>,
+    view: [[f32; 4]; 4],
+    perspective: [[f32; 4]; 4],
     width: u32,
     height: u32,
     objects: u32,
@@ -304,15 +302,15 @@ impl<'surface, W> State<'surface, W> {
             self.queue.submit(iter::once(encoder.finish()));
         }
 
-        self.wait();
-
         self.uniforms.as_mut().unwrap().current_chunk += 1;
 
-        write_uniforms_to_buffer(
-            &self.queue,
+        self.queue.write_buffer(
             self.uniforms_buffer.as_ref().unwrap(),
-            self.uniforms.unwrap(),
-        )?;
+            0,
+            bytemuck::bytes_of(self.uniforms.as_ref().unwrap()),
+        );
+
+        self.queue.submit(iter::empty());
 
         Ok(())
     }
@@ -326,20 +324,16 @@ impl<'surface, W> State<'surface, W> {
         samples: u32,
         bounces: u32,
         chunk_size: u32,
-        camera: Camera,
-        objects: &[Object],
-        meshes: &[Mesh],
-        primitives: &[Primitive],
-        vertices: &[Vertex],
-        indices: &[u32],
-        materials: &[Material],
+        scene: &dyn Scene,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let scene_desc = scene.desc()?;
+
         let uniforms = Uniforms {
-            view: camera.world,
-            perspective: camera.projection,
+            view: scene_desc.world,
+            perspective: scene_desc.projection,
             width,
             height,
-            objects: objects.len() as u32,
+            objects: scene_desc.objects,
             bounces,
             current_chunk: 0,
             chunk_size,
@@ -349,42 +343,42 @@ impl<'surface, W> State<'surface, W> {
 
         let uniforms_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("uniforms"),
-            size: Uniforms::SHADER_SIZE.get(),
+            size: std::mem::size_of::<Uniforms>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let objects_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("objects buffer"),
-            size: objects.size().get(),
+            size: (std::mem::size_of::<Object>() as u32 * scene_desc.objects) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let meshes_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("mesh buffer"),
-            size: meshes.size().get(),
+            size: (std::mem::size_of::<Mesh>() as u32 * scene_desc.meshes) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let primitives_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("primitives buffer"),
-            size: primitives.size().get(),
+            size: (std::mem::size_of::<Primitive>() as u32 * scene_desc.primitives) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("vertex buffer"),
-            size: vertices.size().get(),
+            size: (std::mem::size_of::<Vertex>() as u32 * scene_desc.vertices) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
         let index_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("index buffer"),
-            size: indices.size().get(),
+            size: (std::mem::size_of::<u32>() as u32 * scene_desc.indices) as u64,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::BLAS_INPUT,
@@ -393,43 +387,130 @@ impl<'surface, W> State<'surface, W> {
 
         let materials_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("materials buffer"),
-            size: materials.size().get(),
+            size: (std::mem::size_of::<Material>() as u32 * scene_desc.materials) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        write_uniforms_to_buffer(&self.queue, &uniforms_buffer, uniforms)?;
-        write_encased_to_buffer(&self.queue, &objects_buffer, objects)?;
-        write_encased_to_buffer(&self.queue, &meshes_buffer, meshes)?;
-        write_encased_to_buffer(&self.queue, &primitives_buffer, primitives)?;
-        write_encased_to_buffer(&self.queue, &vertex_buffer, vertices)?;
-        write_encased_to_buffer(&self.queue, &index_buffer, indices)?;
-        write_encased_to_buffer(&self.queue, &materials_buffer, materials)?;
-
-        let tlas_vertices = vertices
-            .iter()
-            .map(|vertex| [vertex.position[0], vertex.position[1], vertex.position[2]])
-            .collect::<Vec<_>>();
-
         let tlas_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("tlas vertices buffer"),
-            size: tlas_vertices.size().get(),
+            size: (std::mem::size_of::<[f32; 3]>() as u32 * scene_desc.vertices) as u64,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::COPY_DST
                 | wgpu::BufferUsages::BLAS_INPUT,
             mapped_at_creation: false,
         });
 
-        write_encased_to_buffer(&self.queue, &tlas_vertex_buffer, &tlas_vertices)?;
+        let mut uniforms_mapped = self
+            .queue
+            .write_buffer_with(
+                &uniforms_buffer,
+                0,
+                NonZero::new(std::mem::size_of::<Uniforms>() as u64).unwrap(),
+            )
+            .ok_or("failed to write buffer".to_string())?;
 
-        let tlas_package = configure_tlas(
+        let mut objects_mapped = self
+            .queue
+            .write_buffer_with(
+                &objects_buffer,
+                0,
+                NonZero::new((std::mem::size_of::<Object>() as u32 * scene_desc.objects) as u64)
+                    .unwrap(),
+            )
+            .ok_or("failed to write buffer".to_string())?;
+
+        let mut meshes_mapped = self
+            .queue
+            .write_buffer_with(
+                &meshes_buffer,
+                0,
+                NonZero::new((std::mem::size_of::<Mesh>() as u32 * scene_desc.meshes) as u64)
+                    .unwrap(),
+            )
+            .ok_or("failed to write buffer".to_string())?;
+
+        let mut primitives_mapped = self
+            .queue
+            .write_buffer_with(
+                &primitives_buffer,
+                0,
+                NonZero::new(
+                    (std::mem::size_of::<Primitive>() as u32 * scene_desc.primitives) as u64,
+                )
+                .unwrap(),
+            )
+            .ok_or("failed to write buffer".to_string())?;
+
+        let mut vertices_mapped = self
+            .queue
+            .write_buffer_with(
+                &vertex_buffer,
+                0,
+                NonZero::new((std::mem::size_of::<Vertex>() as u32 * scene_desc.vertices) as u64)
+                    .unwrap(),
+            )
+            .ok_or("failed to write buffer".to_string())?;
+
+        let mut indices_mapped = self
+            .queue
+            .write_buffer_with(
+                &index_buffer,
+                0,
+                NonZero::new((std::mem::size_of::<u32>() as u32 * scene_desc.indices) as u64)
+                    .unwrap(),
+            )
+            .ok_or("failed to write buffer".to_string())?;
+
+        let mut materials_mapped = self
+            .queue
+            .write_buffer_with(
+                &materials_buffer,
+                0,
+                NonZero::new(
+                    (std::mem::size_of::<Material>() as u32 * scene_desc.materials) as u64,
+                )
+                .unwrap(),
+            )
+            .ok_or("failed to write buffer".to_string())?;
+
+        let mut tlas_vertices_mapped = self
+            .queue
+            .write_buffer_with(
+                &tlas_vertex_buffer,
+                0,
+                NonZero::new((std::mem::size_of::<[f32; 3]>() as u32 * scene_desc.vertices) as u64)
+                    .unwrap(),
+            )
+            .ok_or("failed to write buffer".to_string())?;
+
+        uniforms_mapped
+            .as_mut()
+            .copy_from_slice(bytemuck::bytes_of(&uniforms));
+
+        scene.load(
+            objects_mapped.as_mut(),
+            meshes_mapped.as_mut(),
+            primitives_mapped.as_mut(),
+            vertices_mapped.as_mut(),
+            indices_mapped.as_mut(),
+            materials_mapped.as_mut(),
+            tlas_vertices_mapped.as_mut(),
+        )?;
+
+        let tlas = self.device.create_tlas(&wgpu::CreateTlasDescriptor {
+            label: Some("tlas"),
+            max_instances: scene_desc.objects,
+            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+        });
+
+        let tlas_package = scene.configure_acceleration_structures(
             &self.device,
             &self.queue,
-            &index_buffer,
+            tlas,
             &tlas_vertex_buffer,
-            objects,
-            meshes,
-            primitives,
+            &index_buffer,
         )?;
 
         let texture = create_texture(&self.device, width, height);
@@ -513,6 +594,17 @@ impl<'surface, W> State<'surface, W> {
             mapped_at_creation: false,
         });
 
+        drop(uniforms_mapped);
+        drop(objects_mapped);
+        drop(meshes_mapped);
+        drop(primitives_mapped);
+        drop(vertices_mapped);
+        drop(indices_mapped);
+        drop(materials_mapped);
+        drop(tlas_vertices_mapped);
+
+        self.queue.submit(iter::empty());
+
         self.bind_group = Some(bind_group);
         self.uniforms = Some(uniforms);
         self.uniforms_buffer = Some(uniforms_buffer);
@@ -526,6 +618,7 @@ impl<'surface, W> State<'surface, W> {
         self.tlas = Some(tlas_package);
         self.samples = Some(texture);
         self.pixel_buffer = Some(pixel_buffer);
+
         Ok(())
     }
 }
@@ -547,148 +640,6 @@ fn create_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Textu
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     })
-}
-
-fn write_uniforms_to_buffer(
-    queue: &wgpu::Queue,
-    buffer: &wgpu::Buffer,
-    uniforms: Uniforms,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut memory = queue
-        .write_buffer_with(buffer, 0, Uniforms::SHADER_SIZE)
-        .unwrap();
-
-    let mut storage = UniformBuffer::new(memory.as_mut());
-
-    storage.write(&uniforms)?;
-
-    drop(memory);
-
-    queue.submit(iter::empty());
-
-    Ok(())
-}
-
-fn write_encased_to_buffer<T: encase::ShaderType + encase::internal::WriteInto>(
-    queue: &wgpu::Queue,
-    buffer: &wgpu::Buffer,
-    data: T,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut memory = queue.write_buffer_with(buffer, 0, data.size()).unwrap();
-
-    let mut storage = StorageBuffer::new(memory.as_mut());
-
-    storage.write(&data)?;
-
-    drop(memory);
-
-    queue.submit(iter::empty());
-
-    Ok(())
-}
-
-fn configure_tlas(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    index_buffer: &wgpu::Buffer,
-    tlas_vertext_buffer: &wgpu::Buffer,
-    objects: &[Object],
-    meshes: &[Mesh],
-    primitives: &[Primitive],
-) -> Result<wgpu::TlasPackage, Box<dyn std::error::Error>> {
-    let tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
-        label: None,
-        max_instances: objects.len() as u32,
-        flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-        update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-    });
-
-    let mut tlas_package = wgpu::TlasPackage::new(tlas);
-
-    let blases = objects
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(i, object)| {
-            let mesh = meshes[object.mesh as usize];
-            let primitives = &primitives[mesh.primitive_start as usize
-                ..mesh.primitive_start as usize + mesh.primitive_count as usize];
-
-            let sizes = primitives
-                .iter()
-                .map(|p| {
-                    (
-                        wgpu::BlasTriangleGeometrySizeDescriptor {
-                            vertex_format: wgpu::VertexFormat::Float32x3,
-                            vertex_count: p.vertex_count,
-                            index_format: Some(wgpu::IndexFormat::Uint32),
-                            index_count: Some(p.index_count),
-                            flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
-                        },
-                        p,
-                    )
-                })
-                .collect::<Vec<_>>();
-
-            let blas = device.create_blas(
-                &wgpu::CreateBlasDescriptor {
-                    label: None,
-                    flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-                    update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-                },
-                wgpu::BlasGeometrySizeDescriptors::Triangles {
-                    descriptors: sizes
-                        .iter()
-                        .map(|(size, _)| size.clone())
-                        .collect::<Vec<_>>(),
-                },
-            );
-
-            tlas_package[i] = Some(wgpu::TlasInstance::new(
-                &blas,
-                object.transform.transpose().as_slice()[0..12]
-                    .try_into()
-                    .unwrap(),
-                i as u32,
-                0xff,
-            ));
-
-            (sizes, blas)
-        })
-        .collect::<Vec<_>>();
-
-    let build_entries = blases
-        .iter()
-        .map(|(sizes, blas)| {
-            let geometries = sizes
-                .iter()
-                .map(|(size, p)| wgpu::BlasTriangleGeometry {
-                    size,
-                    vertex_buffer: tlas_vertext_buffer,
-                    first_vertex: p.vertex_start,
-                    vertex_stride: std::mem::size_of::<[f32; 3]>() as u64,
-                    index_buffer: Some(index_buffer),
-                    index_buffer_offset: Some(p.index_start as u64 * 4),
-                    transform_buffer: None,
-                    transform_buffer_offset: None,
-                })
-                .collect::<Vec<_>>();
-
-            wgpu::BlasBuildEntry {
-                blas,
-                geometry: wgpu::BlasGeometries::TriangleGeometries(geometries),
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let mut encoder =
-        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-    encoder.build_acceleration_structures(build_entries.iter(), iter::once(&tlas_package));
-
-    queue.submit(Some(encoder.finish()));
-
-    Ok(tlas_package)
 }
 
 fn make_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {

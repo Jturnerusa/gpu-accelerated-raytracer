@@ -75,20 +75,14 @@ async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std:
     }))
     .await?;
 
-    upload_scene(
+    state.load_scene(
         args.width,
         (args.width as f32 / args.aspect_ratio) as u32,
+        args.seed,
         args.samples,
         args.bounces,
-        args.seed,
-        find_best_chunk_size(
-            args.chunk_size,
-            args.width,
-            WORKGROUP_SIZE_X as u32,
-            WORKGROUP_SIZE_Y as u32,
-        ),
+        args.chunk_size,
         scene,
-        &mut state,
     )?;
 
     while !state.is_finished() {
@@ -126,20 +120,14 @@ async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std:
 async fn run_headless(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std::error::Error>> {
     let mut state = State::new(None).await?;
 
-    upload_scene(
+    state.load_scene(
         args.width,
         (args.width as f32 / args.aspect_ratio) as u32,
+        args.seed,
         args.samples,
         args.bounces,
-        args.seed,
-        find_best_chunk_size(
-            args.chunk_size,
-            args.width,
-            WORKGROUP_SIZE_X as u32,
-            WORKGROUP_SIZE_Y as u32,
-        ),
+        args.chunk_size,
         scene,
-        &mut state,
     )?;
 
     while !state.is_finished() {
@@ -188,51 +176,6 @@ fn rgba32float_to_rgba8888(floats: &[u8], output: &mut Vec<u8>) {
     }
 }
 
-fn upload_scene<W>(
-    width: u32,
-    height: u32,
-    samples: u32,
-    bounces: u32,
-    seed: u32,
-    chunk_size: u32,
-    scene: &dyn Scene,
-    state: &mut State<W>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut objects = Vec::new();
-    let mut meshes = Vec::new();
-    let mut primitives = Vec::new();
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let mut materials = Vec::new();
-
-    let camera = scene.load(
-        &mut objects,
-        &mut meshes,
-        &mut primitives,
-        &mut vertices,
-        &mut indices,
-        &mut materials,
-    )?;
-
-    state.load_scene(
-        width,
-        height,
-        seed,
-        samples,
-        bounces,
-        chunk_size,
-        camera,
-        objects.as_slice(),
-        meshes.as_slice(),
-        primitives.as_slice(),
-        vertices.as_slice(),
-        indices.as_slice(),
-        materials.as_slice(),
-    )?;
-
-    Ok(())
-}
-
 fn load_scene<'data>(
     path: &Path,
     data: &'data mut Vec<u8>,
@@ -241,9 +184,7 @@ fn load_scene<'data>(
         Some("glb") => {
             load_scene_data(path, data)?;
 
-            let scene = scene::gltf::Scene::from_slice(data.as_slice())?;
-
-            Ok(Box::new(scene))
+            Ok(Box::new(scene::gltf::Scene::from_slice(data.as_slice())?))
         }
         _ => Err("failed to recognize file format".to_string())?,
     }
