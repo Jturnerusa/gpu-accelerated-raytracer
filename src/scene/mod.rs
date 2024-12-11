@@ -3,8 +3,10 @@ pub mod gltf;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
-    pub position: [f32; 3],
-    pub normal: [f32; 3],
+    pos: [f32; 3],
+    _p0: [u32; 1],
+    normal: [f32; 3],
+    _p1: [u32; 1],
 }
 
 #[repr(C)]
@@ -80,4 +82,15 @@ pub trait Scene {
         vertex_buffer: &wgpu::Buffer,
         index_buffer: &wgpu::Buffer,
     ) -> Result<wgpu::TlasPackage, Box<dyn std::error::Error>>;
+}
+
+impl Vertex {
+    pub fn new(position: [f32; 3], normal: [f32; 3]) -> Self {
+        Self {
+            pos: position,
+            _p0: [0],
+            normal,
+            _p1: [0],
+        }
+    }
 }

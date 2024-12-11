@@ -111,7 +111,7 @@ impl<'a> Scene<'a> {
             .unwrap()
             .zip(reader.read_normals().unwrap())
         {
-            vertices.write_all(bytemuck::bytes_of(&Vertex { position, normal }))?;
+            vertices.write_all(bytemuck::bytes_of(&Vertex::new(position, normal)))?;
         }
 
         for index in reader.read_indices().unwrap().into_u32() {
