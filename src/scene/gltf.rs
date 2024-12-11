@@ -27,8 +27,8 @@ impl<'a> Scene<'a> {
         &self,
         meshes: &mut [u8],
         primitives: &mut [u8],
-        vertices: &mut [u8],
-        indices: &mut [u8],
+        vertices: &mut Vec<Vertex>,
+        indices: &mut Vec<u32>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut vertex_counter = 0;
         let mut index_counter = 0;
@@ -53,8 +53,8 @@ impl<'a> Scene<'a> {
         mesh: &gltf::Mesh,
         mut meshes: &mut [u8],
         primitives: &mut [u8],
-        vertices: &mut [u8],
-        indices: &mut [u8],
+        vertices: &mut Vec<Vertex>,
+        indices: &mut Vec<u32>,
         vertex_counter: &mut u32,
         index_counter: &mut u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -81,8 +81,8 @@ impl<'a> Scene<'a> {
         &self,
         primitive: gltf::Primitive,
         mut primitives: &mut [u8],
-        mut vertices: &mut [u8],
-        mut indices: &mut [u8],
+        mut vertices: &mut Vec<Vertex>,
+        mut indices: &mut Vec<u32>,
         vertex_counter: &mut u32,
         index_counter: &mut u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -111,11 +111,11 @@ impl<'a> Scene<'a> {
             .unwrap()
             .zip(reader.read_normals().unwrap())
         {
-            vertices.write_all(bytemuck::bytes_of(&Vertex { position, normal }))?;
+            vertices.push(Vertex { position, normal });
         }
 
         for index in reader.read_indices().unwrap().into_u32() {
-            indices.write_all(bytemuck::bytes_of(&index))?;
+            indices.push(index);
         }
 
         Ok(())
@@ -437,8 +437,8 @@ impl<'data> super::Scene for Scene<'data> {
         objects: &mut [u8],
         meshes: &mut [u8],
         primitives: &mut [u8],
-        vertices: &mut [u8],
-        indices: &mut [u8],
+        vertices: &mut Vec<Vertex>,
+        indices: &mut Vec<u32>,
         materials: &mut [u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.load_meshes(meshes, primitives, vertices, indices)?;

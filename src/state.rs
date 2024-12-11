@@ -469,14 +469,20 @@ impl<'surface, W> State<'surface, W> {
             .as_mut()
             .copy_from_slice(bytemuck::bytes_of(&uniforms));
 
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
         scene.load(
             objects_mapped.as_mut(),
             meshes_mapped.as_mut(),
             primitives_mapped.as_mut(),
-            vertices_mapped.as_mut(),
-            indices_mapped.as_mut(),
+            &mut vertices,
+            &mut indices,
             materials_mapped.as_mut(),
         )?;
+
+        write_encased_to_buffer(&self.queue, &vertex_buffer, vertices.as_slice()).unwrap();
+        write_encased_to_buffer(&self.queue, &index_buffer, indices.as_slice()).unwrap();
 
         let tlas = self.device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("tlas"),
@@ -803,4 +809,22 @@ fn make_render_pipeline(
         multiview: None,
         cache: None,
     })
+}
+
+fn write_encased_to_buffer<T: encase::ShaderType + encase::internal::WriteInto>(
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    data: T,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut memory = queue.write_buffer_with(buffer, 0, data.size()).unwrap();
+
+    let mut storage = encase::StorageBuffer::new(memory.as_mut());
+
+    storage.write(&data)?;
+
+    drop(memory);
+
+    queue.submit(iter::empty());
+
+    Ok(())
 }

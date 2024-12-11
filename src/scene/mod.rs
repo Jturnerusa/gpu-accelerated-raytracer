@@ -1,7 +1,7 @@
 pub mod gltf;
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable, encase::ShaderType)]
 pub struct Vertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
@@ -65,8 +65,8 @@ pub trait Scene {
         objects: &mut [u8],
         meshes: &mut [u8],
         primitives: &mut [u8],
-        vertices: &mut [u8],
-        indices: &mut [u8],
+        vertices: &mut Vec<Vertex>,
+        indices: &mut Vec<u32>,
         materials: &mut [u8],
     ) -> Result<(), Box<dyn std::error::Error>>;
 
