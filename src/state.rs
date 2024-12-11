@@ -42,7 +42,6 @@ pub struct State<'surface, W> {
     vertex_buffer: Option<wgpu::Buffer>,
     index_buffer: Option<wgpu::Buffer>,
     materials_buffer: Option<wgpu::Buffer>,
-    tlas_vertices_buffer: Option<wgpu::Buffer>,
     tlas: Option<wgpu::TlasPackage>,
     samples: Option<wgpu::Texture>,
     pixel_buffer: Option<wgpu::Buffer>,
@@ -143,7 +142,6 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
             vertex_buffer: None,
             index_buffer: None,
             materials_buffer: None,
-            tlas_vertices_buffer: None,
             tlas: None,
             samples: None,
             pixel_buffer: None,
@@ -372,7 +370,9 @@ impl<'surface, W> State<'surface, W> {
         let vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("vertex buffer"),
             size: (std::mem::size_of::<Vertex>() as u32 * scene_desc.vertices) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::BLAS_INPUT,
             mapped_at_creation: false,
         });
 
@@ -389,15 +389,6 @@ impl<'surface, W> State<'surface, W> {
             label: Some("materials buffer"),
             size: (std::mem::size_of::<Material>() as u32 * scene_desc.materials) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        let tlas_vertex_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("tlas vertices buffer"),
-            size: (std::mem::size_of::<[f32; 3]>() as u32 * scene_desc.vertices) as u64,
-            usage: wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::BLAS_INPUT,
             mapped_at_creation: false,
         });
 
@@ -474,16 +465,6 @@ impl<'surface, W> State<'surface, W> {
             )
             .ok_or("failed to write buffer".to_string())?;
 
-        let mut tlas_vertices_mapped = self
-            .queue
-            .write_buffer_with(
-                &tlas_vertex_buffer,
-                0,
-                NonZero::new((std::mem::size_of::<[f32; 3]>() as u32 * scene_desc.vertices) as u64)
-                    .unwrap(),
-            )
-            .ok_or("failed to write buffer".to_string())?;
-
         uniforms_mapped
             .as_mut()
             .copy_from_slice(bytemuck::bytes_of(&uniforms));
@@ -495,7 +476,6 @@ impl<'surface, W> State<'surface, W> {
             vertices_mapped.as_mut(),
             indices_mapped.as_mut(),
             materials_mapped.as_mut(),
-            tlas_vertices_mapped.as_mut(),
         )?;
 
         let tlas = self.device.create_tlas(&wgpu::CreateTlasDescriptor {
@@ -509,7 +489,7 @@ impl<'surface, W> State<'surface, W> {
             &self.device,
             &self.queue,
             tlas,
-            &tlas_vertex_buffer,
+            &vertex_buffer,
             &index_buffer,
         )?;
 
@@ -601,7 +581,6 @@ impl<'surface, W> State<'surface, W> {
         drop(vertices_mapped);
         drop(indices_mapped);
         drop(materials_mapped);
-        drop(tlas_vertices_mapped);
 
         self.queue.submit(iter::empty());
 
@@ -614,7 +593,6 @@ impl<'surface, W> State<'surface, W> {
         self.vertex_buffer = Some(vertex_buffer);
         self.index_buffer = Some(index_buffer);
         self.materials_buffer = Some(materials_buffer);
-        self.tlas_vertices_buffer = Some(tlas_vertex_buffer);
         self.tlas = Some(tlas_package);
         self.samples = Some(texture);
         self.pixel_buffer = Some(pixel_buffer);
