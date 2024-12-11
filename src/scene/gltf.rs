@@ -29,7 +29,6 @@ impl<'a> Scene<'a> {
         primitives: &mut [u8],
         vertices: &mut [u8],
         indices: &mut [u8],
-        tlas_vertices: &mut [u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut vertex_counter = 0;
         let mut index_counter = 0;
@@ -41,7 +40,6 @@ impl<'a> Scene<'a> {
                 primitives,
                 vertices,
                 indices,
-                tlas_vertices,
                 &mut vertex_counter,
                 &mut index_counter,
             )?;
@@ -57,7 +55,6 @@ impl<'a> Scene<'a> {
         primitives: &mut [u8],
         vertices: &mut [u8],
         indices: &mut [u8],
-        tlas_vertices: &mut [u8],
         vertex_counter: &mut u32,
         index_counter: &mut u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -72,7 +69,6 @@ impl<'a> Scene<'a> {
                 primitives,
                 vertices,
                 indices,
-                tlas_vertices,
                 vertex_counter,
                 index_counter,
             )?;
@@ -87,7 +83,6 @@ impl<'a> Scene<'a> {
         mut primitives: &mut [u8],
         mut vertices: &mut [u8],
         mut indices: &mut [u8],
-        mut tlas_vertices: &mut [u8],
         vertex_counter: &mut u32,
         index_counter: &mut u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -116,7 +111,6 @@ impl<'a> Scene<'a> {
             .unwrap()
             .zip(reader.read_normals().unwrap())
         {
-            tlas_vertices.write_all(bytemuck::bytes_of(&position))?;
             vertices.write_all(bytemuck::bytes_of(&Vertex { position, normal }))?;
         }
 
@@ -446,9 +440,8 @@ impl<'data> super::Scene for Scene<'data> {
         vertices: &mut [u8],
         indices: &mut [u8],
         materials: &mut [u8],
-        tlas_vertices: &mut [u8],
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.load_meshes(meshes, primitives, vertices, indices, tlas_vertices)?;
+        self.load_meshes(meshes, primitives, vertices, indices)?;
         self.load_objects(objects)?;
         self.load_materials(materials)?;
 
@@ -563,7 +556,7 @@ impl<'data> super::Scene for Scene<'data> {
                             size,
                             vertex_buffer,
                             first_vertex,
-                            vertex_stride: std::mem::size_of::<[f32; 3]>() as u64,
+                            vertex_stride: std::mem::size_of::<Vertex>() as u64,
                             index_buffer: Some(index_buffer),
                             index_buffer_offset: Some((first_index * 4) as u64),
                             transform_buffer: None,

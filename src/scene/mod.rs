@@ -68,7 +68,6 @@ pub trait Scene {
         vertices: &mut [u8],
         indices: &mut [u8],
         materials: &mut [u8],
-        tlas_vertices: &mut [u8],
     ) -> Result<(), Box<dyn std::error::Error>>;
 
     fn desc(&self) -> Result<SceneDesc, Box<dyn std::error::Error>>;
