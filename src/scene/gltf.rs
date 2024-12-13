@@ -529,13 +529,14 @@ impl<'data> super::Scene for Scene<'data> {
                     },
                 );
 
-                let transposed =
-                    &Matrix4::from_row_slice(bytemuck::cast_slice(transform.as_slice()))
-                        .transpose();
+                // The raw transform array is in the wrong order.
+                // Matrix4 storage happens to be in the correct order so
+                // we can just use that.
+                let m = Matrix4::from_row_slice(bytemuck::cast_slice(transform.as_slice()));
 
                 tlas_package[i] = Some(wgpu::TlasInstance::new(
                     &blas,
-                    transposed.as_slice()[0..12].try_into().unwrap(),
+                    m.as_slice()[0..12].try_into().unwrap(),
                     i as u32,
                     0xff,
                 ));
