@@ -12,9 +12,10 @@ pub struct Vertex {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Material {
-    pub metalic: f32,
+    pub metallic: f32,
     pub roughness: f32,
     pub emission: f32,
+    pub p0: [u32; 1],
     pub color: [f32; 4],
 }
 
@@ -23,6 +24,7 @@ pub struct Material {
 pub struct Object {
     pub transform: [[f32; 4]; 4],
     pub mesh: u32,
+    pub p0: [u32; 3],
 }
 
 #[repr(C)]
@@ -91,6 +93,28 @@ impl Vertex {
             _p0: [0],
             normal,
             _p1: [0],
+        }
+    }
+}
+
+impl Object {
+    pub fn new(transform: [[f32; 4]; 4], mesh: u32) -> Self {
+        Self {
+            transform,
+            mesh,
+            p0: [0, 0, 0],
+        }
+    }
+}
+
+impl Material {
+    pub fn new(metallic: f32, roughness: f32, emission: f32, color: [f32; 4]) -> Self {
+        Self {
+            metallic,
+            roughness,
+            emission,
+            p0: [0],
+            color,
         }
     }
 }

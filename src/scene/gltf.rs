@@ -128,14 +128,12 @@ impl<'a> Scene<'a> {
 
     fn load_materials(&self, mut materials: &mut [u8]) -> Result<(), Box<dyn std::error::Error>> {
         for material in self.gltf.document.materials() {
-            let color = material.pbr_metallic_roughness().base_color_factor();
-
-            materials.write_all(bytemuck::bytes_of(&Material {
-                metalic: material.pbr_metallic_roughness().metallic_factor(),
-                roughness: material.pbr_metallic_roughness().roughness_factor(),
-                emission: material.emissive_strength().unwrap_or(0.0),
-                color,
-            }))?;
+            materials.write_all(bytemuck::bytes_of(&Material::new(
+                material.pbr_metallic_roughness().metallic_factor(),
+                material.pbr_metallic_roughness().roughness_factor(),
+                material.emissive_strength().unwrap_or(0.0),
+                material.pbr_metallic_roughness().base_color_factor(),
+            )))?;
         }
 
         Ok(())
@@ -169,10 +167,10 @@ impl<'a> Scene<'a> {
                     .try_into()
                     .unwrap();
 
-                    objects.write_all(bytemuck::bytes_of(&Object {
+                    objects.write_all(bytemuck::bytes_of(&Object::new(
                         transform,
-                        mesh: mesh.index() as u32,
-                    }))?;
+                        mesh.index() as u32,
+                    )))?;
                 }
                 None => continue,
             }
