@@ -1,8 +1,6 @@
 use std::{borrow::Cow, io::Write, iter};
 
-use gltf::Gltf;
 use nalgebra::{Matrix4, Perspective3};
-use sdl2::sys::AnyModifier;
 
 use crate::scene::{Material, Object};
 

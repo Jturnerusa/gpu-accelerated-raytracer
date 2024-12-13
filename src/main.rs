@@ -5,8 +5,8 @@ mod state;
 
 use std::{
     fs::File,
-    io::{self, Read},
-    path::{Path, PathBuf},
+    io::{self},
+    path::PathBuf,
 };
 
 use clap::Parser;
