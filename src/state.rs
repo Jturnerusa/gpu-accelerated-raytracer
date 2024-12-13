@@ -1,9 +1,4 @@
-use std::{
-    collections::HashMap,
-    iter,
-    num::NonZeroU64,
-    sync,
-};
+use std::{collections::HashMap, iter, num::NonZeroU64, sync};
 
 use crate::scene::{Material, Mesh, Object, Primitive, Scene, Vertex};
 
