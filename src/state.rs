@@ -416,6 +416,7 @@ impl<'surface, W> State<'surface, W> {
             materials.as_mut_slice(),
         )?;
 
+        write_to_buffer(&self.queue, &uniforms_buffer, bytemuck::bytes_of(&uniforms))?;
         write_to_buffer(&self.queue, &objects_buffer, objects.as_slice())?;
         write_to_buffer(&self.queue, &meshes_buffer, meshes.as_slice())?;
         write_to_buffer(&self.queue, &primitives_buffer, primitives.as_slice())?;
