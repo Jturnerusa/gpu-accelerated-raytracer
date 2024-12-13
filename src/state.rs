@@ -1,4 +1,10 @@
-use std::{collections::HashMap, io::Write, iter, num::NonZero, sync};
+use std::{
+    collections::HashMap,
+    io::Write,
+    iter,
+    num::{NonZero, NonZeroU64},
+    sync,
+};
 
 use crate::scene::{Material, Mesh, Object, Primitive, Scene, Vertex};
 
@@ -392,91 +398,31 @@ impl<'surface, W> State<'surface, W> {
             mapped_at_creation: false,
         });
 
-        let mut uniforms_mapped = self
-            .queue
-            .write_buffer_with(
-                &uniforms_buffer,
-                0,
-                NonZero::new(std::mem::size_of::<Uniforms>() as u64).unwrap(),
-            )
-            .ok_or("failed to write buffer".to_string())?;
-
-        let mut objects_mapped = self
-            .queue
-            .write_buffer_with(
-                &objects_buffer,
-                0,
-                NonZero::new((std::mem::size_of::<Object>() as u32 * scene_desc.objects) as u64)
-                    .unwrap(),
-            )
-            .ok_or("failed to write buffer".to_string())?;
-
-        let mut meshes_mapped = self
-            .queue
-            .write_buffer_with(
-                &meshes_buffer,
-                0,
-                NonZero::new((std::mem::size_of::<Mesh>() as u32 * scene_desc.meshes) as u64)
-                    .unwrap(),
-            )
-            .ok_or("failed to write buffer".to_string())?;
-
-        let mut primitives_mapped = self
-            .queue
-            .write_buffer_with(
-                &primitives_buffer,
-                0,
-                NonZero::new(
-                    (std::mem::size_of::<Primitive>() as u32 * scene_desc.primitives) as u64,
-                )
-                .unwrap(),
-            )
-            .ok_or("failed to write buffer".to_string())?;
-
-        let mut vertices_mapped = self
-            .queue
-            .write_buffer_with(
-                &vertex_buffer,
-                0,
-                NonZero::new((std::mem::size_of::<Vertex>() as u32 * scene_desc.vertices) as u64)
-                    .unwrap(),
-            )
-            .ok_or("failed to write buffer".to_string())?;
-
-        let mut indices_mapped = self
-            .queue
-            .write_buffer_with(
-                &index_buffer,
-                0,
-                NonZero::new((std::mem::size_of::<u32>() as u32 * scene_desc.indices) as u64)
-                    .unwrap(),
-            )
-            .ok_or("failed to write buffer".to_string())?;
-
-        let mut materials_mapped = self
-            .queue
-            .write_buffer_with(
-                &materials_buffer,
-                0,
-                NonZero::new(
-                    (std::mem::size_of::<Material>() as u32 * scene_desc.materials) as u64,
-                )
-                .unwrap(),
-            )
-            .ok_or("failed to write buffer".to_string())?;
-
-        uniforms_mapped
-            .as_mut()
-            .copy_from_slice(bytemuck::bytes_of(&uniforms));
+        // temporary workaround for wgpu bug with write_buffer_with
+        let mut objects = vec![0u8; std::mem::size_of::<Object>() * scene_desc.objects as usize];
+        let mut meshes = vec![0u8; std::mem::size_of::<Mesh>() * scene_desc.meshes as usize];
+        let mut primitives =
+            vec![0u8; std::mem::size_of::<Primitive>() * scene_desc.primitives as usize];
+        let mut vertices = vec![0u8; std::mem::size_of::<Vertex>() * scene_desc.vertices as usize];
+        let mut indices = vec![0u8; std::mem::size_of::<u32>() * scene_desc.indices as usize];
+        let mut materials =
+            vec![0u8; std::mem::size_of::<Material>() * scene_desc.materials as usize];
 
         scene.load(
-            objects_mapped.as_mut(),
-            meshes_mapped.as_mut(),
-            primitives_mapped.as_mut(),
-            vertices_mapped.as_mut(),
-            indices_mapped.as_mut(),
-            materials_mapped.as_mut(),
+            objects.as_mut_slice(),
+            meshes.as_mut_slice(),
+            primitives.as_mut_slice(),
+            vertices.as_mut_slice(),
+            indices.as_mut_slice(),
+            materials.as_mut_slice(),
         )?;
+
+        write_to_buffer(&self.queue, &objects_buffer, objects.as_slice())?;
+        write_to_buffer(&self.queue, &meshes_buffer, meshes.as_slice())?;
+        write_to_buffer(&self.queue, &primitives_buffer, primitives.as_slice())?;
+        write_to_buffer(&self.queue, &vertex_buffer, vertices.as_slice())?;
+        write_to_buffer(&self.queue, &index_buffer, indices.as_slice())?;
+        write_to_buffer(&self.queue, &materials_buffer, materials.as_slice())?;
 
         let tlas = self.device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("tlas"),
@@ -573,16 +519,6 @@ impl<'surface, W> State<'surface, W> {
             usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-
-        drop(uniforms_mapped);
-        drop(objects_mapped);
-        drop(meshes_mapped);
-        drop(primitives_mapped);
-        drop(vertices_mapped);
-        drop(indices_mapped);
-        drop(materials_mapped);
-
-        self.queue.submit(iter::empty());
 
         self.bind_group = Some(bind_group);
         self.uniforms = Some(uniforms);
@@ -803,4 +739,26 @@ fn make_render_pipeline(
         multiview: None,
         cache: None,
     })
+}
+
+fn write_to_buffer(
+    queue: &wgpu::Queue,
+    buffer: &wgpu::Buffer,
+    data: &[u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut mapped = queue
+        .write_buffer_with(
+            buffer,
+            0,
+            NonZeroU64::new(std::mem::size_of_val(data) as u64).unwrap(),
+        )
+        .ok_or("failed to map buffer".to_string())?;
+
+    mapped.as_mut().copy_from_slice(data);
+
+    drop(mapped);
+
+    queue.submit(iter::empty());
+
+    Ok(())
 }
