@@ -87,11 +87,18 @@ impl<'a> Scene<'a> {
         let reader = primitive.reader(|_| Some(&self.bin));
 
         let vertex_start = *vertex_counter;
-        let vertex_count = reader.read_positions().unwrap().len() as u32;
+        let vertex_count = reader
+            .read_positions()
+            .ok_or("failed to read positions".to_string())?
+            .len() as u32;
         *vertex_counter += vertex_count;
 
         let index_start = *index_counter;
-        let index_count = reader.read_indices().unwrap().into_u32().len() as u32;
+        let index_count = reader
+            .read_indices()
+            .ok_or("failed to read indices".to_string())?
+            .into_u32()
+            .len() as u32;
         *index_counter += index_count;
 
         let material = primitive.material().index().unwrap() as u32;
@@ -104,11 +111,11 @@ impl<'a> Scene<'a> {
             material,
         }))?;
 
-        for (position, normal) in reader
-            .read_positions()
-            .unwrap()
-            .zip(reader.read_normals().unwrap())
-        {
+        for (position, normal) in reader.read_positions().unwrap().zip(
+            reader
+                .read_normals()
+                .ok_or("failed to read normals".to_string())?,
+        ) {
             vertices.write_all(bytemuck::bytes_of(&Vertex::new(position, normal)))?;
         }
 
