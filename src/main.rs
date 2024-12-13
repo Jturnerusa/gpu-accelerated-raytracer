@@ -41,8 +41,13 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let mut data = Vec::new();
-    let scene = load_scene(args.scene.as_path(), &mut data)?;
+    let file = File::open(args.scene.as_path())?;
+    let data = unsafe { memmap2::Mmap::map(&file)? };
+
+    let scene = match args.scene.as_path().extension().and_then(|s| s.to_str()) {
+        Some("glb") => Box::new(scene::gltf::Scene::from_slice(&data[..])?),
+        _ => Err("failed to recognize file format".to_string())?,
+    };
 
     if args.gui {
         run_with_gui(&args, &*scene).await?;
@@ -174,28 +179,6 @@ fn rgba32float_to_rgba8888(floats: &[u8], output: &mut Vec<u8>) {
 
         output.extend_from_slice(&[r, g, b]);
     }
-}
-
-fn load_scene<'data>(
-    path: &Path,
-    data: &'data mut Vec<u8>,
-) -> Result<Box<dyn Scene + 'data>, Box<dyn std::error::Error>> {
-    match path.extension().and_then(|extension| extension.to_str()) {
-        Some("glb") => {
-            load_scene_data(path, data)?;
-
-            Ok(Box::new(scene::gltf::Scene::from_slice(data.as_slice())?))
-        }
-        _ => Err("failed to recognize file format".to_string())?,
-    }
-}
-
-fn load_scene_data(path: &Path, data: &mut Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
-    let mut file = File::open(path)?;
-
-    file.read_to_end(data)?;
-
-    Ok(())
 }
 
 fn find_best_chunk_size(max: u32, width: u32, wgx: u32, wgy: u32) -> u32 {
