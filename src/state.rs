@@ -392,32 +392,105 @@ impl<'surface, W> State<'surface, W> {
             mapped_at_creation: false,
         });
 
-        // temporary workaround for wgpu bug with write_buffer_with
-        let mut objects = vec![0u8; std::mem::size_of::<Object>() * scene_desc.objects as usize];
-        let mut meshes = vec![0u8; std::mem::size_of::<Mesh>() * scene_desc.meshes as usize];
-        let mut primitives =
-            vec![0u8; std::mem::size_of::<Primitive>() * scene_desc.primitives as usize];
-        let mut vertices = vec![0u8; std::mem::size_of::<Vertex>() * scene_desc.vertices as usize];
-        let mut indices = vec![0u8; std::mem::size_of::<u32>() * scene_desc.indices as usize];
-        let mut materials =
-            vec![0u8; std::mem::size_of::<Material>() * scene_desc.materials as usize];
+        let mut uniforms_mapped = self
+            .queue
+            .write_buffer_with(
+                &uniforms_buffer,
+                0,
+                NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64).unwrap(),
+            )
+            .ok_or("failed to map buffer".to_string())?;
+
+        let mut objects_mapped = self
+            .queue
+            .write_buffer_with(
+                &objects_buffer,
+                0,
+                NonZeroU64::new(
+                    (std::mem::size_of::<Object>() * scene_desc.objects as usize) as u64,
+                )
+                .unwrap(),
+            )
+            .ok_or("failed to map buffer".to_string())?;
+
+        let mut meshes_mapped = self
+            .queue
+            .write_buffer_with(
+                &meshes_buffer,
+                0,
+                NonZeroU64::new((std::mem::size_of::<Mesh>() * scene_desc.meshes as usize) as u64)
+                    .unwrap(),
+            )
+            .ok_or("failed to map buffer".to_string())?;
+
+        let mut primitives_mapped = self
+            .queue
+            .write_buffer_with(
+                &primitives_buffer,
+                0,
+                NonZeroU64::new(
+                    (std::mem::size_of::<Primitive>() * scene_desc.primitives as usize) as u64,
+                )
+                .unwrap(),
+            )
+            .ok_or("failed to map buffer".to_string())?;
+
+        let mut vertices_mapped = self
+            .queue
+            .write_buffer_with(
+                &vertex_buffer,
+                0,
+                NonZeroU64::new(
+                    (std::mem::size_of::<Vertex>() * scene_desc.vertices as usize) as u64,
+                )
+                .unwrap(),
+            )
+            .ok_or("failed to map buffer".to_string())?;
+
+        let mut indices_mapped = self
+            .queue
+            .write_buffer_with(
+                &index_buffer,
+                0,
+                NonZeroU64::new((std::mem::size_of::<u32>() * scene_desc.indices as usize) as u64)
+                    .unwrap(),
+            )
+            .ok_or("failed to map buffer".to_string())?;
+
+        let mut materials_mapped = self
+            .queue
+            .write_buffer_with(
+                &materials_buffer,
+                0,
+                NonZeroU64::new(
+                    (std::mem::size_of::<Material>() * scene_desc.materials as usize) as u64,
+                )
+                .unwrap(),
+            )
+            .ok_or("failed to map buffer".to_string())?;
+
+        uniforms_mapped
+            .as_mut()
+            .copy_from_slice(bytemuck::bytes_of(&uniforms));
 
         scene.load(
-            &mut objects.as_mut_slice(),
-            &mut meshes.as_mut_slice(),
-            &mut primitives.as_mut_slice(),
-            &mut vertices.as_mut_slice(),
-            &mut indices.as_mut_slice(),
-            &mut materials.as_mut_slice(),
+            &mut objects_mapped.as_mut(),
+            &mut meshes_mapped.as_mut(),
+            &mut primitives_mapped.as_mut(),
+            &mut vertices_mapped.as_mut(),
+            &mut indices_mapped.as_mut(),
+            &mut materials_mapped.as_mut(),
         )?;
 
-        write_to_buffer(&self.queue, &uniforms_buffer, bytemuck::bytes_of(&uniforms))?;
-        write_to_buffer(&self.queue, &objects_buffer, objects.as_slice())?;
-        write_to_buffer(&self.queue, &meshes_buffer, meshes.as_slice())?;
-        write_to_buffer(&self.queue, &primitives_buffer, primitives.as_slice())?;
-        write_to_buffer(&self.queue, &vertex_buffer, vertices.as_slice())?;
-        write_to_buffer(&self.queue, &index_buffer, indices.as_slice())?;
-        write_to_buffer(&self.queue, &materials_buffer, materials.as_slice())?;
+        drop(uniforms_mapped);
+        drop(objects_mapped);
+        drop(meshes_mapped);
+        drop(primitives_mapped);
+        drop(vertices_mapped);
+        drop(indices_mapped);
+        drop(materials_mapped);
+
+        self.queue.submit(iter::empty());
 
         let tlas = self.device.create_tlas(&wgpu::CreateTlasDescriptor {
             label: Some("tlas"),
