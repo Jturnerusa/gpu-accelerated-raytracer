@@ -16,4 +16,3 @@ gltf = { version = "1.4.1", features = ["KHR_materials_emissive_strength"] }
 png = "0.17.14"
 bytemuck = { version = "1.20.0", features = ["derive"] }
 memmap2 = "0.9.5"
-anyhow = "1.0.94"
