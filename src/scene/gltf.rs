@@ -1,4 +1,4 @@
-use std::{borrow::Cow, io::Write, iter};
+use std::{borrow::Cow, fs::File, io::Write, iter};
 
 use nalgebra::{Matrix4, Perspective3};
 
@@ -8,17 +8,15 @@ use super::{Camera, Mesh, Primitive, SceneDesc, Vertex};
 
 #[derive(Clone, Debug)]
 pub struct Scene<'a> {
-    gltf: gltf::Gltf,
-    bin: Cow<'a, [u8]>,
+    document: gltf::Document,
+    bin: &'a [u8],
 }
 
 impl<'a> Scene<'a> {
-    pub fn from_slice(data: &'a [u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        let glb = gltf::Glb::from_slice(data)?;
-        let gltf = gltf::Gltf::from_slice(&glb.json)?;
-        let bin = glb.bin.ok_or("failed to load binary data".to_string())?;
+    pub fn new(json: &'a [u8], bin: &'a [u8]) -> Result<Self, Box<dyn std::error::Error>> {
+        let document = gltf::Gltf::from_slice(json)?.document;
 
-        Ok(Self { gltf, bin })
+        Ok(Self { document, bin })
     }
 
     fn load_meshes(
@@ -31,7 +29,7 @@ impl<'a> Scene<'a> {
         let mut vertex_counter = 0;
         let mut index_counter = 0;
 
-        for mesh in self.gltf.document.meshes() {
+        for mesh in self.document.meshes() {
             self.load_mesh(
                 &mesh,
                 meshes,
@@ -57,7 +55,6 @@ impl<'a> Scene<'a> {
         index_counter: &mut u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let primitive_start = self
-            .gltf
             .document
             .meshes()
             .take(mesh.index())
@@ -137,7 +134,7 @@ impl<'a> Scene<'a> {
     }
 
     fn load_materials(&self, materials: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
-        for material in self.gltf.document.materials() {
+        for material in self.document.materials() {
             materials.write_all(bytemuck::bytes_of(&Material::new(
                 material.pbr_metallic_roughness().metallic_factor(),
                 material.pbr_metallic_roughness().roughness_factor(),
@@ -150,7 +147,7 @@ impl<'a> Scene<'a> {
     }
 
     fn load_objects(&self, objects: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
-        for node in self.gltf.document.nodes() {
+        for node in self.document.nodes() {
             match node.mesh() {
                 Some(mesh) => {
                     let transform = bytemuck::cast_slice(
@@ -190,12 +187,7 @@ impl<'a> Scene<'a> {
     }
 
     fn load_camera(&self) -> Result<Option<Camera>, Box<dyn std::error::Error>> {
-        let node = match self
-            .gltf
-            .document
-            .nodes()
-            .find(|node| node.camera().is_some())
-        {
+        let node = match self.document.nodes().find(|node| node.camera().is_some()) {
             Some(node) => node,
             None => return Ok(None),
         };
@@ -250,20 +242,18 @@ impl<'a> Scene<'a> {
     }
 
     fn object_count(&self) -> u32 {
-        self.gltf
-            .document
+        self.document
             .nodes()
             .filter(|object| object.mesh().is_some())
             .count() as u32
     }
 
     fn mesh_count(&self) -> u32 {
-        self.gltf.document.meshes().count() as u32
+        self.document.meshes().count() as u32
     }
 
     fn primitive_count(&self) -> u32 {
-        self.gltf
-            .document
+        self.document
             .meshes()
             .map(|mesh| mesh.primitives().len())
             .sum::<usize>() as u32
@@ -271,7 +261,6 @@ impl<'a> Scene<'a> {
 
     fn vertex_count(&self) -> Result<u32, Box<dyn std::error::Error>> {
         Ok(self
-            .gltf
             .document
             .meshes()
             .flat_map(|mesh| mesh.primitives())
@@ -288,7 +277,6 @@ impl<'a> Scene<'a> {
 
     fn index_count(&self) -> Result<u32, Box<dyn std::error::Error>> {
         Ok(self
-            .gltf
             .document
             .meshes()
             .flat_map(|mesh| mesh.primitives())
@@ -305,7 +293,7 @@ impl<'a> Scene<'a> {
     }
 
     fn material_count(&self) -> u32 {
-        self.gltf.document.materials().len() as u32
+        self.document.materials().len() as u32
     }
 
     fn get_primitive_vertex_count(
@@ -313,8 +301,7 @@ impl<'a> Scene<'a> {
         mesh_index: usize,
         primitive_index: usize,
     ) -> Result<u32, Box<dyn std::error::Error>> {
-        self.gltf
-            .document
+        self.document
             .meshes()
             .nth(mesh_index)
             .unwrap()
@@ -337,7 +324,6 @@ impl<'a> Scene<'a> {
         primitive_index: usize,
     ) -> Result<u32, Box<dyn std::error::Error>> {
         Ok(self
-            .gltf
             .document
             .meshes()
             .take(mesh_index)
@@ -354,7 +340,6 @@ impl<'a> Scene<'a> {
                 Result::<_, Box<dyn std::error::Error>>::Ok(acc + e?)
             })?
             + self
-                .gltf
                 .document
                 .meshes()
                 .nth(mesh_index)
@@ -379,8 +364,7 @@ impl<'a> Scene<'a> {
         mesh_index: usize,
         primitive_index: usize,
     ) -> Result<u32, Box<dyn std::error::Error>> {
-        self.gltf
-            .document
+        self.document
             .meshes()
             .nth(mesh_index)
             .unwrap()
@@ -404,7 +388,6 @@ impl<'a> Scene<'a> {
         primitive_index: usize,
     ) -> Result<u32, Box<dyn std::error::Error>> {
         Ok(self
-            .gltf
             .document
             .meshes()
             .take(mesh_index)
@@ -422,7 +405,6 @@ impl<'a> Scene<'a> {
                 Result::<_, Box<dyn std::error::Error>>::Ok(acc + e?)
             })?
             + self
-                .gltf
                 .document
                 .meshes()
                 .nth(mesh_index)
@@ -491,7 +473,6 @@ impl<'data> super::Scene for Scene<'data> {
         let mut tlas_package = wgpu::TlasPackage::new(tlas);
 
         let blases = self
-            .gltf
             .document
             .nodes()
             .filter_map(|node| node.mesh().map(|mesh| (node.transform().matrix(), mesh)))

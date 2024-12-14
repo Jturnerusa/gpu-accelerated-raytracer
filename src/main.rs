@@ -44,18 +44,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let file = File::open(args.scene.as_path())?;
     let data = unsafe { memmap2::Mmap::map(&file)? };
 
-    let scene = match args.scene.as_path().extension().and_then(|s| s.to_str()) {
-        Some("glb") => Box::new(scene::gltf::Scene::from_slice(&data[..])?),
+    match args.scene.as_path().extension().and_then(|s| s.to_str()) {
+        Some("glb") => {
+            let glb = gltf::Glb::from_slice(&data)?;
+            let bin = &glb
+                .bin
+                .ok_or("no binary data found in glb file".to_string())?;
+
+            let scene = Box::new(crate::scene::gltf::Scene::new(&glb.json, bin)?);
+
+            if args.gui {
+                run_with_gui(&args, &*scene).await?;
+            } else {
+                run_headless(&args, &*scene).await?;
+            }
+
+            Ok(())
+        }
+        Some("gltf") => {
+            let data_file = File::open(args.scene.with_extension("bin"))?;
+            let bin = unsafe { memmap2::Mmap::map(&data_file)? };
+
+            let scene = Box::new(crate::scene::gltf::Scene::new(&data, &bin)?);
+
+            if args.gui {
+                run_with_gui(&args, &*scene).await?;
+            } else {
+                run_headless(&args, &*scene).await?;
+            }
+
+            Ok(())
+        }
         _ => Err("failed to recognize file format".to_string())?,
-    };
-
-    if args.gui {
-        run_with_gui(&args, &*scene).await?;
-    } else {
-        run_headless(&args, &*scene).await?;
     }
-
-    Ok(())
 }
 
 async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std::error::Error>> {
