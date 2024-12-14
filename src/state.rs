@@ -403,12 +403,12 @@ impl<'surface, W> State<'surface, W> {
             vec![0u8; std::mem::size_of::<Material>() * scene_desc.materials as usize];
 
         scene.load(
-            objects.as_mut_slice(),
-            meshes.as_mut_slice(),
-            primitives.as_mut_slice(),
-            vertices.as_mut_slice(),
-            indices.as_mut_slice(),
-            materials.as_mut_slice(),
+            &mut objects.as_mut_slice(),
+            &mut meshes.as_mut_slice(),
+            &mut primitives.as_mut_slice(),
+            &mut vertices.as_mut_slice(),
+            &mut indices.as_mut_slice(),
+            &mut materials.as_mut_slice(),
         )?;
 
         write_to_buffer(&self.queue, &uniforms_buffer, bytemuck::bytes_of(&uniforms))?;

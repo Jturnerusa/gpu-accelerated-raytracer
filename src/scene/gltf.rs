@@ -23,10 +23,10 @@ impl<'a> Scene<'a> {
 
     fn load_meshes(
         &self,
-        meshes: &mut [u8],
-        primitives: &mut [u8],
-        vertices: &mut [u8],
-        indices: &mut [u8],
+        meshes: &mut dyn Write,
+        primitives: &mut dyn Write,
+        vertices: &mut dyn Write,
+        indices: &mut dyn Write,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let mut vertex_counter = 0;
         let mut index_counter = 0;
@@ -49,16 +49,26 @@ impl<'a> Scene<'a> {
     fn load_mesh(
         &self,
         mesh: &gltf::Mesh,
-        mut meshes: &mut [u8],
-        primitives: &mut [u8],
-        vertices: &mut [u8],
-        indices: &mut [u8],
+        meshes: &mut dyn Write,
+        primitives: &mut dyn Write,
+        vertices: &mut dyn Write,
+        indices: &mut dyn Write,
         vertex_counter: &mut u32,
         index_counter: &mut u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let primitive_start = self
+            .gltf
+            .document
+            .meshes()
+            .take(mesh.index())
+            .flat_map(|mesh| mesh.primitives())
+            .count() as u32;
+
+        let primitive_count = mesh.primitives().count() as u32;
+
         meshes.write_all(bytemuck::bytes_of(&Mesh {
-            primitive_start: primitives.len() as u32,
-            primitive_count: mesh.primitives().len() as u32,
+            primitive_start,
+            primitive_count,
         }))?;
 
         for primitive in mesh.primitives() {
@@ -78,9 +88,9 @@ impl<'a> Scene<'a> {
     fn load_primitive(
         &self,
         primitive: gltf::Primitive,
-        mut primitives: &mut [u8],
-        mut vertices: &mut [u8],
-        mut indices: &mut [u8],
+        primitives: &mut dyn Write,
+        vertices: &mut dyn Write,
+        indices: &mut dyn Write,
         vertex_counter: &mut u32,
         index_counter: &mut u32,
     ) -> Result<(), Box<dyn std::error::Error>> {
@@ -126,7 +136,7 @@ impl<'a> Scene<'a> {
         Ok(())
     }
 
-    fn load_materials(&self, mut materials: &mut [u8]) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_materials(&self, materials: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
         for material in self.gltf.document.materials() {
             materials.write_all(bytemuck::bytes_of(&Material::new(
                 material.pbr_metallic_roughness().metallic_factor(),
@@ -139,7 +149,7 @@ impl<'a> Scene<'a> {
         Ok(())
     }
 
-    fn load_objects(&self, mut objects: &mut [u8]) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_objects(&self, objects: &mut dyn Write) -> Result<(), Box<dyn std::error::Error>> {
         for node in self.gltf.document.nodes() {
             match node.mesh() {
                 Some(mesh) => {
@@ -437,12 +447,12 @@ impl<'a> Scene<'a> {
 impl<'data> super::Scene for Scene<'data> {
     fn load(
         &self,
-        objects: &mut [u8],
-        meshes: &mut [u8],
-        primitives: &mut [u8],
-        vertices: &mut [u8],
-        indices: &mut [u8],
-        materials: &mut [u8],
+        objects: &mut dyn Write,
+        meshes: &mut dyn Write,
+        primitives: &mut dyn Write,
+        vertices: &mut dyn Write,
+        indices: &mut dyn Write,
+        materials: &mut dyn Write,
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.load_meshes(meshes, primitives, vertices, indices)?;
         self.load_objects(objects)?;
