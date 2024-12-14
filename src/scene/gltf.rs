@@ -446,7 +446,7 @@ impl<'data> super::Scene for Scene<'data> {
     fn desc(&self) -> Result<super::SceneDesc, Box<dyn std::error::Error>> {
         let camera = match self.load_camera() {
             Ok(Some(camera)) => camera,
-            Ok(None) => Err("failed to load camera".to_string())?,
+            Ok(None) => Err("failed to load camera from scene".to_string())?,
             Err(e) => Err(e)?,
         };
 
