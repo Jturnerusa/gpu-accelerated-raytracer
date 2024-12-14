@@ -1,6 +1,8 @@
 use std::{collections::HashMap, iter, num::NonZeroU64, sync};
 
-use crate::scene::{Material, Mesh, Object, Primitive, Scene, Vertex};
+use nalgebra::Matrix4;
+
+use crate::scene::{BlasEntry, Material, Mesh, Object, Primitive, Scene, Vertex};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -492,20 +494,13 @@ impl<'surface, W> State<'surface, W> {
 
         self.queue.submit(iter::empty());
 
-        let tlas = self.device.create_tlas(&wgpu::CreateTlasDescriptor {
-            label: Some("tlas"),
-            max_instances: scene_desc.objects,
-            flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-            update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-        });
-
-        let tlas_package = scene.configure_acceleration_structures(
+        let tlas_package = configure_acceleration_structures(
             &self.device,
             &self.queue,
-            tlas,
             &vertex_buffer,
             &index_buffer,
-        )?;
+            scene_desc.blas_entries.as_slice(),
+        );
 
         let texture = create_texture(&self.device, width, height);
         let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -829,4 +824,107 @@ fn write_to_buffer(
     queue.submit(iter::empty());
 
     Ok(())
+}
+
+fn configure_acceleration_structures(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    vertex_buffer: &wgpu::Buffer,
+    index_buffer: &wgpu::Buffer,
+    blas_entries: &[BlasEntry],
+) -> wgpu::TlasPackage {
+    let tlas = device.create_tlas(&wgpu::CreateTlasDescriptor {
+        label: Some("tlas"),
+        max_instances: blas_entries.len() as u32,
+        flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+        update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+    });
+
+    let mut tlas_package = wgpu::TlasPackage::new(tlas);
+
+    let blases = blas_entries
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let descriptors = entry
+                .geometries
+                .iter()
+                .map(|geometry| {
+                    (
+                        wgpu::BlasTriangleGeometrySizeDescriptor {
+                            vertex_format: wgpu::VertexFormat::Float32x3,
+                            vertex_count: geometry.vertex_count,
+                            index_format: Some(wgpu::IndexFormat::Uint32),
+                            index_count: Some(geometry.index_count),
+                            flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
+                        },
+                        geometry,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let blas = device.create_blas(
+                &wgpu::CreateBlasDescriptor {
+                    label: None,
+                    flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
+                    update_mode: wgpu::AccelerationStructureUpdateMode::Build,
+                },
+                wgpu::BlasGeometrySizeDescriptors::Triangles {
+                    descriptors: descriptors
+                        .iter()
+                        .map(|(descriptor, _)| descriptor.clone())
+                        .collect(),
+                },
+            );
+
+            // The raw transform array is in the wrong order.
+            // Matrix4 storage happens to be in the correct order so
+            // we can just use that.
+            let m = Matrix4::from_row_slice(bytemuck::cast_slice(entry.transform.as_slice()));
+
+            tlas_package[i] = Some(wgpu::TlasInstance::new(
+                &blas,
+                m.as_slice()[0..12].try_into().unwrap(),
+                i as u32,
+                0xff,
+            ));
+
+            (descriptors, blas)
+        })
+        .collect::<Vec<_>>();
+
+    let build_entries = blases
+        .iter()
+        .map(|(descriptors, blas)| {
+            let geometries = descriptors
+                .iter()
+                .map(|(descriptor, geometry)| wgpu::BlasTriangleGeometry {
+                    size: descriptor,
+                    vertex_buffer,
+                    first_vertex: geometry.first_vertex,
+                    vertex_stride: std::mem::size_of::<Vertex>() as u64,
+                    index_buffer: Some(index_buffer),
+                    index_buffer_offset: Some(
+                        geometry.first_index as u64 * std::mem::size_of::<u32>() as u64,
+                    ),
+                    transform_buffer: None,
+                    transform_buffer_offset: None,
+                })
+                .collect::<Vec<_>>();
+
+            wgpu::BlasBuildEntry {
+                blas: &blas,
+                geometry: wgpu::BlasGeometries::TriangleGeometries(geometries),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut encoder =
+        device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+    encoder.build_acceleration_structures(build_entries.iter(), iter::once(&tlas_package));
+
+    queue.submit(Some(encoder.finish()));
+
+    tlas_package
 }

@@ -53,7 +53,7 @@ pub struct Camera {
     pub world: [[f32; 4]; 4],
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct SceneDesc {
     pub world: [[f32; 4]; 4],
     pub projection: [[f32; 4]; 4],
@@ -63,6 +63,21 @@ pub struct SceneDesc {
     pub vertices: u32,
     pub indices: u32,
     pub materials: u32,
+    pub blas_entries: Vec<BlasEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct BlasEntry {
+    pub transform: [[f32; 4]; 4],
+    pub geometries: Vec<BlasGeometry>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct BlasGeometry {
+    pub first_vertex: u32,
+    pub vertex_count: u32,
+    pub first_index: u32,
+    pub index_count: u32,
 }
 
 pub trait Scene {
@@ -77,15 +92,6 @@ pub trait Scene {
     ) -> Result<(), Box<dyn std::error::Error>>;
 
     fn desc(&self) -> Result<SceneDesc, Box<dyn std::error::Error>>;
-
-    fn configure_acceleration_structures(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        tlas: wgpu::Tlas,
-        vertex_buffer: &wgpu::Buffer,
-        index_buffer: &wgpu::Buffer,
-    ) -> Result<wgpu::TlasPackage, Box<dyn std::error::Error>>;
 }
 
 impl Vertex {

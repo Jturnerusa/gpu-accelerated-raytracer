@@ -2,9 +2,9 @@ use std::{borrow::Cow, fs::File, io::Write, iter};
 
 use nalgebra::{Matrix4, Perspective3};
 
-use crate::scene::{Material, Object};
+use crate::scene::{BlasGeometry, Material, Object};
 
-use super::{Camera, Mesh, Primitive, SceneDesc, Vertex};
+use super::{BlasEntry, Camera, Mesh, Primitive, SceneDesc, Vertex};
 
 #[derive(Clone, Debug)]
 pub struct Scene<'a> {
@@ -450,6 +450,41 @@ impl<'data> super::Scene for Scene<'data> {
             Err(e) => Err(e)?,
         };
 
+        let blas_entries = self
+            .document
+            .nodes()
+            .filter_map(|node| node.mesh().map(|mesh| (mesh, node.transform().matrix())))
+            .enumerate()
+            .map(|(mesh_index, (mesh, transform))| {
+                let geometries = mesh
+                    .primitives()
+                    .enumerate()
+                    .map(|(primitive_index, _)| {
+                        let first_vertex =
+                            self.get_primitive_first_vertex(mesh_index, primitive_index)?;
+                        let vertex_count =
+                            self.get_primitive_vertex_count(mesh_index, primitive_index)?;
+                        let first_index =
+                            self.get_primitive_first_index(mesh_index, primitive_index)?;
+                        let index_count =
+                            self.get_primitive_index_count(mesh_index, primitive_index)?;
+
+                        Ok(BlasGeometry {
+                            first_vertex,
+                            vertex_count,
+                            first_index,
+                            index_count,
+                        })
+                    })
+                    .collect::<Result<_, Box<dyn std::error::Error>>>()?;
+
+                Ok(BlasEntry {
+                    transform,
+                    geometries,
+                })
+            })
+            .collect::<Result<_, Box<dyn std::error::Error>>>()?;
+
         Ok(SceneDesc {
             world: camera.world,
             projection: camera.projection,
@@ -459,121 +494,7 @@ impl<'data> super::Scene for Scene<'data> {
             vertices: self.vertex_count()?,
             indices: self.index_count()?,
             materials: self.material_count(),
+            blas_entries,
         })
-    }
-
-    fn configure_acceleration_structures(
-        &self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        tlas: wgpu::Tlas,
-        vertex_buffer: &wgpu::Buffer,
-        index_buffer: &wgpu::Buffer,
-    ) -> Result<wgpu::TlasPackage, Box<dyn std::error::Error>> {
-        let mut tlas_package = wgpu::TlasPackage::new(tlas);
-
-        let blases = self
-            .document
-            .nodes()
-            .filter_map(|node| node.mesh().map(|mesh| (node.transform().matrix(), mesh)))
-            .enumerate()
-            .map(|(i, (transform, mesh))| {
-                let sizes = mesh
-                    .primitives()
-                    .map(|primitive| {
-                        let reader = primitive.reader(|_| Some(&self.bin));
-                        let vertex_count = reader
-                            .read_positions()
-                            .ok_or("failed to read positions".to_string())?
-                            .len() as u32;
-                        let index_count = reader
-                            .read_indices()
-                            .ok_or("failed to read indices".to_string())?
-                            .into_u32()
-                            .len() as u32;
-
-                        Result::<_, Box<dyn std::error::Error>>::Ok((
-                            wgpu::BlasTriangleGeometrySizeDescriptor {
-                                vertex_format: wgpu::VertexFormat::Float32x3,
-                                vertex_count,
-                                index_format: Some(wgpu::IndexFormat::Uint32),
-                                index_count: Some(index_count),
-                                flags: wgpu::AccelerationStructureGeometryFlags::OPAQUE,
-                            },
-                            mesh.index(),
-                            primitive.index(),
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                let blas = device.create_blas(
-                    &wgpu::CreateBlasDescriptor {
-                        label: None,
-                        flags: wgpu::AccelerationStructureFlags::PREFER_FAST_TRACE,
-                        update_mode: wgpu::AccelerationStructureUpdateMode::Build,
-                    },
-                    wgpu::BlasGeometrySizeDescriptors::Triangles {
-                        descriptors: sizes
-                            .iter()
-                            .map(|(size, _, _)| size.clone())
-                            .collect::<Vec<_>>(),
-                    },
-                );
-
-                // The raw transform array is in the wrong order.
-                // Matrix4 storage happens to be in the correct order so
-                // we can just use that.
-                let m = Matrix4::from_row_slice(bytemuck::cast_slice(transform.as_slice()));
-
-                tlas_package[i] = Some(wgpu::TlasInstance::new(
-                    &blas,
-                    m.as_slice()[0..12].try_into().unwrap(),
-                    i as u32,
-                    0xff,
-                ));
-
-                Result::<_, Box<dyn std::error::Error>>::Ok((sizes, blas))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let build_entries = blases
-            .iter()
-            .map(|(sizes, blas)| {
-                let geometries = sizes
-                    .iter()
-                    .map(|(size, mesh_index, primitive_index)| {
-                        let first_vertex =
-                            self.get_primitive_first_vertex(*mesh_index, *primitive_index)?;
-                        let first_index =
-                            self.get_primitive_first_index(*mesh_index, *primitive_index)?;
-
-                        Result::<_, Box<dyn std::error::Error>>::Ok(wgpu::BlasTriangleGeometry {
-                            size,
-                            vertex_buffer,
-                            first_vertex,
-                            vertex_stride: std::mem::size_of::<Vertex>() as u64,
-                            index_buffer: Some(index_buffer),
-                            index_buffer_offset: Some((first_index * 4) as u64),
-                            transform_buffer: None,
-                            transform_buffer_offset: None,
-                        })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                Result::<_, Box<dyn std::error::Error>>::Ok(wgpu::BlasBuildEntry {
-                    blas,
-                    geometry: wgpu::BlasGeometries::TriangleGeometries(geometries),
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-        encoder.build_acceleration_structures(build_entries.iter(), iter::once(&tlas_package));
-
-        queue.submit(Some(encoder.finish()));
-
-        Ok(tlas_package)
     }
 }
