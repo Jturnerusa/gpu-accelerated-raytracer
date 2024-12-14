@@ -71,7 +71,7 @@ struct Primitive {
 }
 
 struct Vertex {
-    position: vec3f,
+    pos: vec3f,
     normal: vec3f
 }
 
@@ -86,6 +86,11 @@ struct Material {
 struct Ray {
     origin: vec3f,
     direction: vec3f,
+}
+
+struct Hit {
+    normal: vec3f,
+    material: u32
 }
 
 struct Tri {
@@ -121,6 +126,46 @@ fn random_unit_vec() -> vec3f {
     return normalize(r);
 }
 
+fn tri_normal(tri: Tri) -> vec3f {
+    let v0v1 = tri.v1.pos - tri.v0.pos;
+    let v0v2 = tri.v2.pos - tri.v0.pos;
+
+    return normalize(cross(v0v1, v0v2));
+}
+
+fn get_intersection_data(intersection: RayIntersection) -> Hit {
+    let object = OBJECT_BUFFER[intersection.instance_custom_index];
+    let mesh = MESH_BUFFER[object.mesh];
+    let primitive = PRIMITIVE_BUFFER[mesh.primitive_start + intersection.geometry_index];
+
+    // offset into index buffer relative to the intersected primitive 
+    let x = intersection.primitive_index * 3;
+
+    // offset into the index buffer
+    let first_index_index = x + primitive.index_start;
+
+    // indices from the index buffer
+    let i0 = INDEX_BUFFER[first_index_index];
+    let i1 = INDEX_BUFFER[first_index_index + 1u];
+    let i2 = INDEX_BUFFER[first_index_index + 2u];
+
+    // vertex indices
+    let vi0 = i0 + primitive.vertex_start;
+    let vi1 = i1 + primitive.vertex_start;
+    let vi2 = i2 + primitive.vertex_start;
+
+    // vertices
+    let v0 = VERTEX_BUFFER[vi0];
+    let v1 = VERTEX_BUFFER[vi1];
+    let v2 = VERTEX_BUFFER[vi2];
+
+    let tri = Tri(v0, v1, v2);
+
+    let normal = tri_normal(tri);
+
+    return Hit(normal, primitive.material);
+}
+
 fn ray_at(ray: Ray, t: f32) -> vec3f {
     return ray.origin + t * ray.direction;
 }
@@ -150,12 +195,30 @@ fn ray_query(ray: Ray, min: f32, max: f32) -> RayIntersection {
 fn pixel_color(pixel: vec2f) -> vec4f {
     var ray = cast_ray(pixel);
     var intersection = ray_query(ray, 0.001, F32_MAX);
+    var radiance = vec4f();
+    var attenuation = vec4f(1.0, 1.0, 1.0, 0.0);
+    var bounces = UNIFORMS.bounces;
+    
+    while intersection.kind != RAY_QUERY_INTERSECTION_NONE && bounces > 0u {
+        bounces -= 1u;
+        
+        let hit = get_intersection_data(intersection);
+        let material = MATERIAL_BUFFER[hit.material];
+        let p = ray_at(ray, intersection.t);
+        
+        if material.emission > 0.0 {
+            radiance += material.color * material.emission;
+            break;
+        } else {
+            attenuation *= material.color;
 
-    if intersection.kind != RAY_QUERY_INTERSECTION_NONE {
-        return vec4f(1.0, 1.0, 1.0, 0.0);
-    } else {
-        return vec4f();
+            ray = Ray(p, hit.normal + random_unit_vec());            
+        }
+
+        intersection = ray_query(ray, 0.001, F32_MAX);
     }
+
+    return radiance * attenuation;
 }
 
 @vertex
@@ -184,7 +247,7 @@ fn main(@builtin(global_invocation_id) gid: vec3u) {
     if pixel.x > UNIFORMS.width || pixel.y > UNIFORMS.height {
         return;
     }
-
+    
     var color = vec4f();
 
     for (var i = 0u; i < UNIFORMS.samples; i++) {
