@@ -139,6 +139,7 @@ impl<'a> Scene<'a> {
                 material.pbr_metallic_roughness().metallic_factor(),
                 material.pbr_metallic_roughness().roughness_factor(),
                 material.emissive_strength().unwrap_or(0.0),
+                material.ior().unwrap_or(0.0),
                 material.pbr_metallic_roughness().base_color_factor(),
             )))?;
         }

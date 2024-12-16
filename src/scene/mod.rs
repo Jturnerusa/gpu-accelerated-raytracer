@@ -17,7 +17,7 @@ pub struct Material {
     pub metallic: f32,
     pub roughness: f32,
     pub emission: f32,
-    pub p0: [u32; 1],
+    pub ior: f32,
     pub color: [f32; 4],
 }
 
@@ -116,12 +116,12 @@ impl Object {
 }
 
 impl Material {
-    pub fn new(metallic: f32, roughness: f32, emission: f32, color: [f32; 4]) -> Self {
+    pub fn new(metallic: f32, roughness: f32, emission: f32, ior: f32, color: [f32; 4]) -> Self {
         Self {
             metallic,
             roughness,
             emission,
-            p0: [0],
+            ior,
             color,
         }
     }

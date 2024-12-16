@@ -81,6 +81,7 @@ struct Material {
     metallic: f32,
     roughness: f32,
     emission: f32,
+    ior: f32,
     color: vec4f
 }
 
@@ -179,6 +180,24 @@ fn metal_brdf(normal: vec3f,
     (*pdf) = 1.0;
 }
 
+fn glass_brdf(normal: vec3f,
+              direction: vec3f,
+              material: u32,
+              scattered: ptr<function, vec3f>,
+              color: ptr<function, vec4f>,
+              pdf: ptr<function, f32>)
+{
+    let mat = MATERIAL_BUFFER[material];
+    let uv = normalize(direction);
+    let cos_theta = min(-dot(uv, normal), 1.0);
+    let out_perp = mat.ior * (uv + cos_theta * normal);
+    let out_parallel = -(1.0 - sqrt(abs(dot(out_perp, out_perp))) * normal);
+
+    (*scattered) = out_perp + out_parallel;   
+    (*color) = mat.color;
+    (*pdf) = 1.0;
+}
+
 fn tri_normal(tri: Tri) -> vec3f {
     let v0v1 = tri.v1.pos - tri.v0.pos;
     let v0v2 = tri.v2.pos - tri.v0.pos;
@@ -273,11 +292,15 @@ fn pixel_color(pixel: vec2f) -> vec4f {
             radiance += material.color * material.emission;
             break;
         } else if material.metallic > 0.0 {
-            attenuation *= color / pdf;
             metal_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
-        } else {
             attenuation *= color / pdf;            
-            diffuse_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
+        } else {
+            if rand() > 0.5 {
+                diffuse_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
+            } else {
+                glass_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
+            }
+            attenuation *= (color / pdf) * 0.5;
         }
 
         ray = Ray(p, scattered);
