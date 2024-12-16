@@ -160,7 +160,9 @@ fn diffuse_brdf(normal: vec3f,
     (*scattered) = sample_cosine_hemisphere(vec2f(rand(), rand()));
     (*color) = mat.color / PI;
     (*pdf) = cosine_hemisphere_pdf(abs(direction.z));
-    
+    if direction.z < 0.0 {
+        (*scattered).z *= -1.0;
+    }
 }
 
 
