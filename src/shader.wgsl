@@ -1,5 +1,7 @@
 const F32_MAX: f32 = 3.40282347e+38f;
 const F32_EPSILON: f32 = 1.1920929e-7;
+const PI: f32 = 3.1415926;
+const INV_PI: f32 = 0.3183098;
 
 @group(0) @binding(0)
 var<uniform> UNIFORMS: Uniforms;
@@ -82,7 +84,6 @@ struct Material {
     color: vec4f
 }
 
-
 struct Ray {
     origin: vec3f,
     direction: vec3f,
@@ -124,6 +125,42 @@ fn random_unit_vec() -> vec3f {
       }
     }
     return normalize(r);
+}
+
+fn square(x: f32) -> f32 {
+    return x * x;
+}
+
+fn sample_unit_disk(u: vec2f) -> vec2f {
+    let r = sqrt(u.x);
+    let theta = 2 * PI * u.y;
+    let x = r * cos(theta);
+    let y = r * sin(theta);
+    return vec2f(x, y);
+}
+
+fn sample_cosine_hemisphere(u: vec2f) -> vec3f {
+    let d = sample_unit_disk(u);
+    let z = sqrt(1 - square(d.x) - square(d.y));
+    return vec3f(d.x, d.y, z);
+}
+
+fn cosine_hemisphere_pdf(cos_theta: f32) -> f32 {
+    return cos_theta * INV_PI;
+}
+
+fn diffuse_brdf(normal: vec3f,
+                direction: vec3f,
+                material: u32,
+                scattered: ptr<function, vec3f>,
+                color: ptr<function, vec4f>,
+                pdf: ptr<function, f32>)
+{
+    let mat = MATERIAL_BUFFER[material];
+    (*scattered) = sample_cosine_hemisphere(vec2f(rand(), rand()));
+    (*color) = mat.color / PI;
+    (*pdf) = cosine_hemisphere_pdf(abs(direction.z));
+    
 }
 
 fn tri_normal(tri: Tri) -> vec3f {
@@ -198,23 +235,33 @@ fn pixel_color(pixel: vec2f) -> vec4f {
     var radiance = vec4f();
     var attenuation = vec4f(1.0, 1.0, 1.0, 0.0);
     var bounces = UNIFORMS.bounces;
+    var scattered = vec3f();
+    var pdf = 1.0;
+    var color = vec4f(1.0);
     
     while intersection.kind != RAY_QUERY_INTERSECTION_NONE && bounces > 0u {
         bounces -= 1u;
         
         let hit = get_intersection_data(intersection);
-        let material = MATERIAL_BUFFER[hit.material];
         let p = ray_at(ray, intersection.t);
-        
+        let material = MATERIAL_BUFFER[hit.material];
+        var normal = vec3f();
+
+        if dot(hit.normal, ray.direction) > 0.0 {
+            normal = hit.normal;
+        } else {
+            normal = -hit.normal;
+        }
+               
         if material.emission > 0.0 {
             radiance += material.color * material.emission;
             break;
         } else {
-            attenuation *= material.color;
-
-            ray = Ray(p, hit.normal + random_unit_vec());            
+            attenuation *= color / pdf;            
+            diffuse_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
         }
 
+        ray = Ray(p, scattered);
         intersection = ray_query(ray, 0.001, F32_MAX);
     }
 
