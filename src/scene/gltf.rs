@@ -1,4 +1,4 @@
-use std::{borrow::Cow, fs::File, io::Write, iter};
+use std::io::Write;
 
 use nalgebra::{Matrix4, Perspective3};
 
