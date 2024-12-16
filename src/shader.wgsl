@@ -163,6 +163,20 @@ fn diffuse_brdf(normal: vec3f,
     
 }
 
+
+fn metal_brdf(normal: vec3f,
+              direction: vec3f,
+              material: u32,
+              scattered: ptr<function, vec3f>,
+              color: ptr<function, vec4f>,
+              pdf: ptr<function, f32>)
+{
+    let mat = MATERIAL_BUFFER[material];
+    (*scattered) = reflect(direction, normal);
+    (*color) = mat.color;
+    (*pdf) = 1.0;
+}
+
 fn tri_normal(tri: Tri) -> vec3f {
     let v0v1 = tri.v1.pos - tri.v0.pos;
     let v0v2 = tri.v2.pos - tri.v0.pos;
@@ -256,6 +270,9 @@ fn pixel_color(pixel: vec2f) -> vec4f {
         if material.emission > 0.0 {
             radiance += material.color * material.emission;
             break;
+        } else if material.metallic > 0.0 {
+            attenuation *= color / pdf;
+            metal_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
         } else {
             attenuation *= color / pdf;            
             diffuse_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
