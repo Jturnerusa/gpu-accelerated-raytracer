@@ -108,7 +108,10 @@ impl<'a> Scene<'a> {
             .len() as u32;
         *index_counter += index_count;
 
-        let material = primitive.material().index().unwrap() as u32;
+        let material = primitive
+            .material()
+            .index()
+            .ok_or("no material found for primitive".to_string())? as u32;
 
         primitives.write_all(bytemuck::bytes_of(&Primitive {
             vertex_start,
