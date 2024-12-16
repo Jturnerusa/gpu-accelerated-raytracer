@@ -121,15 +121,23 @@ impl<'a> Scene<'a> {
             material,
         }))?;
 
-        for (position, normal) in reader.read_positions().unwrap().zip(
-            reader
-                .read_normals()
-                .ok_or("failed to read normals".to_string())?,
-        ) {
+        for (position, normal) in reader
+            .read_positions()
+            .ok_or("failed to read positions".to_string())?
+            .zip(
+                reader
+                    .read_normals()
+                    .ok_or("failed to read normals".to_string())?,
+            )
+        {
             vertices.write_all(bytemuck::bytes_of(&Vertex::new(position, normal)))?;
         }
 
-        for index in reader.read_indices().unwrap().into_u32() {
+        for index in reader
+            .read_indices()
+            .ok_or("failed to read indices".to_string())?
+            .into_u32()
+        {
             indices.write_all(bytemuck::bytes_of(&index))?;
         }
 
