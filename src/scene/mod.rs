@@ -83,12 +83,12 @@ pub struct BlasGeometry {
 pub trait Scene {
     fn load(
         &self,
-        objects: &mut dyn Write,
-        meshes: &mut dyn Write,
-        primitives: &mut dyn Write,
-        vertices: &mut dyn Write,
-        indices: &mut dyn Write,
-        materials: &mut dyn Write,
+        objects: &mut [u8],
+        meshes: &mut [u8],
+        primitives: &mut [u8],
+        vertices: &mut [u8],
+        indices: &mut [u8],
+        materials: &mut [u8],
     ) -> Result<(), Box<dyn std::error::Error>>;
 
     fn desc(&self) -> Result<SceneDesc, Box<dyn std::error::Error>>;

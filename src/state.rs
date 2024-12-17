@@ -476,12 +476,12 @@ impl<'surface, W> State<'surface, W> {
             .copy_from_slice(bytemuck::bytes_of(&uniforms));
 
         scene.load(
-            &mut objects_mapped.as_mut(),
-            &mut meshes_mapped.as_mut(),
-            &mut primitives_mapped.as_mut(),
-            &mut vertices_mapped.as_mut(),
-            &mut indices_mapped.as_mut(),
-            &mut materials_mapped.as_mut(),
+            objects_mapped.as_mut(),
+            meshes_mapped.as_mut(),
+            primitives_mapped.as_mut(),
+            vertices_mapped.as_mut(),
+            indices_mapped.as_mut(),
+            materials_mapped.as_mut(),
         )?;
 
         drop(uniforms_mapped);
