@@ -54,6 +54,7 @@ pub struct State<'surface, W> {
     textures: Option<Vec<wgpu::Texture>>,
     tlas: Option<wgpu::TlasPackage>,
     samples: Option<wgpu::Texture>,
+    sampler: Option<wgpu::Sampler>,
     pixel_buffer: Option<wgpu::Buffer>,
 }
 
@@ -146,6 +147,7 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
             texture_descriptors_buffer: None,
             tlas: None,
             samples: None,
+            sampler: None,
             pixel_buffer: None,
         })
     }
@@ -486,12 +488,25 @@ impl<'surface, W> State<'surface, W> {
             .ok_or("failed to map buffer".to_string())?;
 
         let textures = if scene_desc.textures.is_empty() {
-            iter::once(create_texture(&self.device, 1, 1)).collect::<Vec<_>>()
+            iter::once(create_texture(
+                &self.device,
+                1,
+                1,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ))
+            .collect::<Vec<_>>()
         } else {
             scene_desc
                 .textures
                 .iter()
-                .map(|desc| create_texture(&self.device, desc.width, desc.height))
+                .map(|desc| {
+                    create_texture(
+                        &self.device,
+                        desc.width,
+                        desc.height,
+                        wgpu::TextureFormat::Rgba8Unorm,
+                    )
+                })
                 .collect::<Vec<_>>()
         };
 
@@ -543,8 +558,20 @@ impl<'surface, W> State<'surface, W> {
             scene_desc.blas_entries.as_slice(),
         );
 
-        let samples = create_texture(&self.device, width, height);
+        let samples = create_texture(
+            &self.device,
+            width,
+            height,
+            wgpu::TextureFormat::Rgba32Float,
+        );
         let samples_view = samples.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
 
         let bind_group_layout = make_bind_group_layout(&self.device, textures.len() as u32);
 
@@ -562,6 +589,7 @@ impl<'surface, W> State<'surface, W> {
             &samples_view,
             texture_views.iter().collect::<Vec<_>>().as_slice(),
             &tlas_package,
+            &sampler,
         );
 
         let compute_pipeline = make_compute_pipeline(&self.device, &bind_group_layout);
@@ -592,12 +620,18 @@ impl<'surface, W> State<'surface, W> {
         self.tlas = Some(tlas_package);
         self.samples = Some(samples);
         self.pixel_buffer = Some(pixel_buffer);
+        self.sampler = Some(sampler);
 
         Ok(())
     }
 }
 
-fn create_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {
+fn create_texture(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+    format: wgpu::TextureFormat,
+) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("storage texture"),
         size: wgpu::Extent3d {
@@ -608,7 +642,7 @@ fn create_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Textu
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba32Float,
+        format,
         usage: wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::COPY_SRC
@@ -732,10 +766,16 @@ fn make_bind_group_layout(device: &wgpu::Device, textures_count: u32) -> wgpu::B
                 visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     multisampled: false,
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     view_dimension: wgpu::TextureViewDimension::D2,
                 },
                 count: Some(NonZeroU32::new(textures_count).unwrap()),
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 11,
+                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
             },
         ],
     })
@@ -755,6 +795,7 @@ fn make_bind_group(
     samples_view: &wgpu::TextureView,
     texture_views: &[&wgpu::TextureView],
     tlas_package: &wgpu::TlasPackage,
+    sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("bind group 1"),
@@ -835,6 +876,10 @@ fn make_bind_group(
             wgpu::BindGroupEntry {
                 binding: 10,
                 resource: wgpu::BindingResource::TextureViewArray(texture_views),
+            },
+            wgpu::BindGroupEntry {
+                binding: 11,
+                resource: wgpu::BindingResource::Sampler(sampler),
             },
         ],
     })

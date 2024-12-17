@@ -36,6 +36,9 @@ var SAMPLES: texture_storage_2d<rgba32float, read_write>;
 @group(0) @binding(10)
 var TEXTURES: binding_array<texture_2d<f32>>;
 
+@group(0) @binding(11)
+var SAMPLER: sampler;
+
 var<private> RNG: u32 = 0;
 
 var<private> VERTS: array<vec2f, 6> = array (
@@ -305,9 +308,7 @@ fn pixel_color(pixel: vec2f) -> vec4f {
         var normal = vec3f();
 
         if material.has_texture == 1 {
-            let texture_descriptor = TEXTURE_DESCRIPTOR_BUFFER[material.texture];
-            let index = hit.uv * vec2f(f32(texture_descriptor.width), f32(texture_descriptor.height));
-            in_color = textureLoad(TEXTURES[material.texture], vec2u(index), 0);
+            in_color = textureSampleLevel(TEXTURES[material.texture], SAMPLER, hit.uv, 0.0);
         } else {
             in_color = material.color;
         }

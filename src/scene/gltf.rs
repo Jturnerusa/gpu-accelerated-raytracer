@@ -255,7 +255,7 @@ impl<'a> Scene<'a> {
                     let reader = self.read_buffer(&view.buffer())?;
                     let slice = &reader.as_ref()[view.offset()..view.offset() + view.length()];
 
-                    let image = image::load_from_memory(slice)?.into_rgba32f();
+                    let image = image::load_from_memory(slice)?.into_rgba8();
                     let width = image.width();
                     let height = image.height();
                     let image_data = image.to_vec();
@@ -270,7 +270,7 @@ impl<'a> Scene<'a> {
                         bytemuck::cast_slice(image_data.as_slice()),
                         wgpu::TexelCopyBufferLayout {
                             offset: 0,
-                            bytes_per_row: Some(width * std::mem::size_of::<f32>() as u32 * 4),
+                            bytes_per_row: Some(width * 4),
                             rows_per_image: None,
                         },
                         wgpu::Extent3d {
@@ -284,7 +284,7 @@ impl<'a> Scene<'a> {
                     let file = File::open(uri)?;
                     let slice = unsafe { &memmap2::Mmap::map(&file)? };
 
-                    let image = image::load_from_memory(slice)?.into_rgba32f();
+                    let image = image::load_from_memory(slice)?.into_rgba8();
                     let width = image.width();
                     let height = image.height();
                     let image_data = image.to_vec();
@@ -299,7 +299,7 @@ impl<'a> Scene<'a> {
                         bytemuck::cast_slice(image_data.as_slice()),
                         wgpu::TexelCopyBufferLayout {
                             offset: 0,
-                            bytes_per_row: Some(width * std::mem::size_of::<f32>() as u32 * 4),
+                            bytes_per_row: Some(width * 4),
                             rows_per_image: None,
                         },
                         wgpu::Extent3d {
