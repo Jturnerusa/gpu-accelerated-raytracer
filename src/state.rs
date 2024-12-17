@@ -1,4 +1,9 @@
-use std::{collections::HashMap, iter, num::NonZeroU64, sync};
+use std::{
+    collections::HashMap,
+    iter,
+    num::{NonZeroU32, NonZeroU64},
+    sync,
+};
 
 use nalgebra::Matrix4;
 
@@ -29,13 +34,14 @@ pub struct WindowDesc<W> {
 pub struct State<'surface, W> {
     window: Option<WindowDesc<W>>,
     surface: Option<wgpu::Surface<'surface>>,
+    surface_config: Option<wgpu::SurfaceConfiguration>,
     instance: wgpu::Instance,
     device: wgpu::Device,
     queue: wgpu::Queue,
     render_pipeline: Option<wgpu::RenderPipeline>,
-    compute_pipeline: wgpu::ComputePipeline,
+    compute_pipeline: Option<wgpu::ComputePipeline>,
     bind_group: Option<wgpu::BindGroup>,
-    bind_group_layout: wgpu::BindGroupLayout,
+    bind_group_layout: Option<wgpu::BindGroupLayout>,
     uniforms: Option<Uniforms>,
     uniforms_buffer: Option<wgpu::Buffer>,
     objects_buffer: Option<wgpu::Buffer>,
@@ -44,6 +50,8 @@ pub struct State<'surface, W> {
     vertex_buffer: Option<wgpu::Buffer>,
     index_buffer: Option<wgpu::Buffer>,
     materials_buffer: Option<wgpu::Buffer>,
+    texture_descriptors_buffer: Option<wgpu::Buffer>,
+    textures: Option<Vec<wgpu::Texture>>,
     tlas: Option<wgpu::TlasPackage>,
     samples: Option<wgpu::Texture>,
     pixel_buffer: Option<wgpu::Buffer>,
@@ -79,7 +87,10 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
                 &wgpu::DeviceDescriptor {
                     required_features: wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
                         | wgpu::Features::EXPERIMENTAL_RAY_QUERY
-                        | wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE,
+                        | wgpu::Features::EXPERIMENTAL_RAY_TRACING_ACCELERATION_STRUCTURE
+                        | wgpu::Features::TEXTURE_BINDING_ARRAY
+                        | wgpu::Features::STORAGE_RESOURCE_BINDING_ARRAY
+                        | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
                     required_limits: wgpu::Limits::default(),
                     label: None,
                     memory_hints: Default::default(),
@@ -112,30 +123,17 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
             None => None,
         };
 
-        let bind_group_layout = make_bind_group_layout(&device);
-
-        let compute_pipeline = make_compute_pipeline(&device, &bind_group_layout);
-
-        let render_pipeline = if window_desc.is_some() {
-            Some(make_render_pipeline(
-                &device,
-                &bind_group_layout,
-                surface_config.as_ref().unwrap(),
-            ))
-        } else {
-            None
-        };
-
         Ok(Self {
             window: window_desc,
             surface,
+            surface_config,
             instance,
             device,
             queue,
-            render_pipeline,
-            compute_pipeline,
+            render_pipeline: None,
+            compute_pipeline: None,
             bind_group: None,
-            bind_group_layout,
+            bind_group_layout: None,
             uniforms: None,
             uniforms_buffer: None,
             objects_buffer: None,
@@ -144,6 +142,8 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
             vertex_buffer: None,
             index_buffer: None,
             materials_buffer: None,
+            textures: None,
+            texture_descriptors_buffer: None,
             tlas: None,
             samples: None,
             pixel_buffer: None,
@@ -290,7 +290,7 @@ impl<'surface, W> State<'surface, W> {
                     timestamp_writes: None,
                 });
 
-                compute_pass.set_pipeline(&self.compute_pipeline);
+                compute_pass.set_pipeline(self.compute_pipeline.as_ref().unwrap());
                 compute_pass.set_bind_group(0, &self.bind_group, &[]);
                 compute_pass.dispatch_workgroups(
                     uniforms.chunk_size / 8,
@@ -394,6 +394,20 @@ impl<'surface, W> State<'surface, W> {
             mapped_at_creation: false,
         });
 
+        let texture_descriptors_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("texture descriptors buffer"),
+            size: (std::mem::size_of::<Material>() as u32 * scene_desc.materials) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let pixel_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("pixels"),
+            size: u64::from(width) * u64::from(height) * std::mem::size_of::<f32>() as u64 * 4,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let mut uniforms_mapped = self
             .queue
             .write_buffer_with(
@@ -471,18 +485,45 @@ impl<'surface, W> State<'surface, W> {
             )
             .ok_or("failed to map buffer".to_string())?;
 
+        let textures = if scene_desc.textures.is_empty() {
+            iter::once(create_texture(&self.device, 1, 1)).collect::<Vec<_>>()
+        } else {
+            scene_desc
+                .textures
+                .iter()
+                .map(|desc| create_texture(&self.device, desc.width, desc.height))
+                .collect::<Vec<_>>()
+        };
+
+        let texture_views = textures
+            .iter()
+            .map(|texture| {
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    ..Default::default()
+                })
+            })
+            .collect::<Vec<_>>();
+
         uniforms_mapped
             .as_mut()
             .copy_from_slice(bytemuck::bytes_of(&uniforms));
 
         scene.load(
+            &self.queue,
             objects_mapped.as_mut(),
             meshes_mapped.as_mut(),
             primitives_mapped.as_mut(),
             vertices_mapped.as_mut(),
             indices_mapped.as_mut(),
             materials_mapped.as_mut(),
+            textures.as_slice(),
         )?;
+
+        self.queue.write_buffer(
+            &texture_descriptors_buffer,
+            0,
+            bytemuck::cast_slice(scene_desc.textures.as_slice()),
+        );
 
         drop(uniforms_mapped);
         drop(objects_mapped);
@@ -502,98 +543,54 @@ impl<'surface, W> State<'surface, W> {
             scene_desc.blas_entries.as_slice(),
         );
 
-        let texture = create_texture(&self.device, width, height);
-        let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let samples = create_texture(&self.device, width, height);
+        let samples_view = samples.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("bind group 1"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &uniforms_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &objects_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &meshes_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &primitives_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &vertex_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &index_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &materials_buffer,
-                        offset: 0,
-                        size: None,
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: wgpu::BindingResource::AccelerationStructure(tlas_package.tlas()),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: wgpu::BindingResource::TextureView(&texture_view),
-                },
-            ],
-        });
+        let bind_group_layout = make_bind_group_layout(&self.device, textures.len() as u32);
 
-        let pixel_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("pixels"),
-            size: u64::from(width) * u64::from(height) * std::mem::size_of::<f32>() as u64 * 4,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let bind_group = make_bind_group(
+            &self.device,
+            &bind_group_layout,
+            &uniforms_buffer,
+            &objects_buffer,
+            &meshes_buffer,
+            &primitives_buffer,
+            &vertex_buffer,
+            &index_buffer,
+            &materials_buffer,
+            &texture_descriptors_buffer,
+            &samples_view,
+            texture_views.iter().collect::<Vec<_>>().as_slice(),
+            &tlas_package,
+        );
+
+        let compute_pipeline = make_compute_pipeline(&self.device, &bind_group_layout);
+
+        let render_pipeline = match &self.surface_config {
+            Some(config) => Some(make_render_pipeline(
+                &self.device,
+                &bind_group_layout,
+                config,
+            )),
+            None => None,
+        };
 
         self.bind_group = Some(bind_group);
         self.uniforms = Some(uniforms);
         self.uniforms_buffer = Some(uniforms_buffer);
+        self.compute_pipeline = Some(compute_pipeline);
+        self.render_pipeline = render_pipeline;
+        self.bind_group_layout = Some(bind_group_layout);
         self.objects_buffer = Some(objects_buffer);
         self.meshes_buffer = Some(meshes_buffer);
         self.primitives_buffer = Some(primitives_buffer);
         self.vertex_buffer = Some(vertex_buffer);
         self.index_buffer = Some(index_buffer);
         self.materials_buffer = Some(materials_buffer);
+        self.texture_descriptors_buffer = Some(texture_descriptors_buffer);
+        self.textures = Some(textures);
         self.tlas = Some(tlas_package);
-        self.samples = Some(texture);
+        self.samples = Some(samples);
         self.pixel_buffer = Some(pixel_buffer);
 
         Ok(())
@@ -614,12 +611,13 @@ fn create_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Textu
         format: wgpu::TextureFormat::Rgba32Float,
         usage: wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::STORAGE_BINDING
-            | wgpu::TextureUsages::COPY_SRC,
+            | wgpu::TextureUsages::COPY_SRC
+            | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     })
 }
 
-fn make_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+fn make_bind_group_layout(device: &wgpu::Device, textures_count: u32) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("bind group layout"),
         entries: &[
@@ -699,16 +697,27 @@ fn make_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                 },
                 count: None,
             },
-            // tlas
+            // texture descriptors
             wgpu::BindGroupLayoutEntry {
                 binding: 7,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // tlas
+            wgpu::BindGroupLayoutEntry {
+                binding: 8,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::AccelerationStructure,
                 count: None,
             },
-            // texture
+            // samples
             wgpu::BindGroupLayoutEntry {
-                binding: 8,
+                binding: 9,
                 visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::ReadWrite,
@@ -716,6 +725,116 @@ fn make_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
                     view_dimension: wgpu::TextureViewDimension::D2,
                 },
                 count: None,
+            },
+            // textures
+            wgpu::BindGroupLayoutEntry {
+                binding: 10,
+                visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                },
+                count: Some(NonZeroU32::new(textures_count).unwrap()),
+            },
+        ],
+    })
+}
+
+fn make_bind_group(
+    device: &wgpu::Device,
+    bind_group_layout: &wgpu::BindGroupLayout,
+    uniforms_buffer: &wgpu::Buffer,
+    objects_buffer: &wgpu::Buffer,
+    meshes_buffer: &wgpu::Buffer,
+    primitives_buffer: &wgpu::Buffer,
+    vertex_buffer: &wgpu::Buffer,
+    index_buffer: &wgpu::Buffer,
+    materials_buffer: &wgpu::Buffer,
+    texture_descriptors_buffer: &wgpu::Buffer,
+    samples_view: &wgpu::TextureView,
+    texture_views: &[&wgpu::TextureView],
+    tlas_package: &wgpu::TlasPackage,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("bind group 1"),
+        layout: bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: uniforms_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: objects_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: meshes_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: primitives_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: vertex_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: index_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: materials_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: texture_descriptors_buffer,
+                    offset: 0,
+                    size: None,
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: wgpu::BindingResource::AccelerationStructure(tlas_package.tlas()),
+            },
+            wgpu::BindGroupEntry {
+                binding: 9,
+                resource: wgpu::BindingResource::TextureView(samples_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: wgpu::BindingResource::TextureViewArray(texture_views),
             },
         ],
     })

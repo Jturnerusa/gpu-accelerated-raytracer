@@ -5,7 +5,6 @@ mod state;
 
 use std::{
     fs::File,
-    io::{self},
     path::PathBuf,
 };
 

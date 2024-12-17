@@ -25,10 +25,16 @@ var<storage, read> INDEX_BUFFER: array<u32>;
 var<storage, read> MATERIAL_BUFFER: array<Material>;
 
 @group(0) @binding(7)
-var TLAS: acceleration_structure;
+var<storage, read> TEXTURE_DESCRIPTOR_BUFFER: array<TextureDesc>;
 
 @group(0) @binding(8)
+var TLAS: acceleration_structure;
+
+@group(0) @binding(9)
 var SAMPLES: texture_storage_2d<rgba32float, read_write>;
+
+@group(0) @binding(10)
+var TEXTURES: binding_array<texture_2d<f32>>;
 
 var<private> RNG: u32 = 0;
 
@@ -74,7 +80,8 @@ struct Primitive {
 
 struct Vertex {
     pos: vec3f,
-    normal: vec3f
+    normal: vec3f,
+    uv: vec2f,
 }
 
 struct Material {
@@ -82,7 +89,14 @@ struct Material {
     roughness: f32,
     emission: f32,
     ior: f32,
+    texture: u32,
+    has_texture: u32,
     color: vec4f
+}
+
+struct TextureDesc {
+    width: u32,
+    height: u32
 }
 
 struct Ray {
@@ -91,8 +105,10 @@ struct Ray {
 }
 
 struct Hit {
+    material: u32,
     normal: vec3f,
-    material: u32
+    pos: vec3f,
+    uv: vec2f,
 }
 
 struct Tri {
@@ -152,49 +168,48 @@ fn cosine_hemisphere_pdf(cos_theta: f32) -> f32 {
 
 fn diffuse_brdf(normal: vec3f,
                 direction: vec3f,
-                material: u32,
+                in_color: vec4f,
                 scattered: ptr<function, vec3f>,
-                color: ptr<function, vec4f>,
+                out_color: ptr<function, vec4f>,
                 pdf: ptr<function, f32>)
 {
-    let mat = MATERIAL_BUFFER[material];
     (*scattered) = sample_cosine_hemisphere(vec2f(rand(), rand()));
-    (*color) = mat.color / PI;
+    (*out_color) = in_color / PI;
     (*pdf) = cosine_hemisphere_pdf(abs(direction.z));
+    
     if direction.z < 0.0 {
         (*scattered).z *= -1.0;
     }
 }
 
-
 fn metal_brdf(normal: vec3f,
               direction: vec3f,
-              material: u32,
+              in_color: vec4f,
+              roughness: f32,
               scattered: ptr<function, vec3f>,
-              color: ptr<function, vec4f>,
+              out_color: ptr<function, vec4f>,
               pdf: ptr<function, f32>)
 {
-    let mat = MATERIAL_BUFFER[material];
     (*scattered) = reflect(direction, normal);
-    (*color) = mat.color;
+    (*out_color) = in_color;
     (*pdf) = 1.0;
 }
 
 fn glass_brdf(normal: vec3f,
               direction: vec3f,
-              material: u32,
+              in_color: vec4f,
+              ior: f32,
               scattered: ptr<function, vec3f>,
               color: ptr<function, vec4f>,
               pdf: ptr<function, f32>)
 {
-    let mat = MATERIAL_BUFFER[material];
     let uv = normalize(direction);
     let cos_theta = min(-dot(uv, normal), 1.0);
-    let out_perp = mat.ior * (uv + cos_theta * normal);
+    let out_perp = ior * (uv + cos_theta * normal);
     let out_parallel = -(1.0 - sqrt(abs(dot(out_perp, out_perp))) * normal);
 
     (*scattered) = out_perp + out_parallel;   
-    (*color) = mat.color;
+    (*color) = in_color;
     (*pdf) = 1.0;
 }
 
@@ -235,7 +250,13 @@ fn get_intersection_data(intersection: RayIntersection) -> Hit {
 
     let normal = tri_normal(tri);
 
-    return Hit(normal, primitive.material);
+    let bary = vec3f(1.0 - intersection.barycentrics.x - intersection.barycentrics.y,
+                     intersection.barycentrics);
+
+    let pos = v0.pos * bary.x + v1.pos * bary.y + v2.pos * bary.z;
+    var uv = v0.uv * bary.x + v1.uv * bary.y + v2.uv * bary.z;
+
+    return Hit(primitive.material, normal, pos, uv);
 }
 
 fn ray_at(ray: Ray, t: f32) -> vec3f {
@@ -272,7 +293,7 @@ fn pixel_color(pixel: vec2f) -> vec4f {
     var bounces = UNIFORMS.bounces;
     var scattered = vec3f();
     var pdf = 1.0;
-    var color = vec4f(1.0);
+    var out_color = vec4f(1.0);
     
     while intersection.kind != RAY_QUERY_INTERSECTION_NONE && bounces > 0u {
         bounces -= 1u;
@@ -280,8 +301,17 @@ fn pixel_color(pixel: vec2f) -> vec4f {
         let hit = get_intersection_data(intersection);
         let p = ray_at(ray, intersection.t);
         let material = MATERIAL_BUFFER[hit.material];
+        var in_color = vec4f();
         var normal = vec3f();
 
+        if material.has_texture == 1 {
+            let texture_descriptor = TEXTURE_DESCRIPTOR_BUFFER[material.texture];
+            let index = hit.uv * vec2f(f32(texture_descriptor.width), f32(texture_descriptor.height));
+            in_color = textureLoad(TEXTURES[material.texture], vec2u(index), 0);
+        } else {
+            in_color = material.color;
+        }
+        
         if dot(hit.normal, ray.direction) > 0.0 {
             normal = hit.normal;
         } else {
@@ -292,15 +322,15 @@ fn pixel_color(pixel: vec2f) -> vec4f {
             radiance += material.color * material.emission;
             break;
         } else if material.metallic > 0.0 {
-            metal_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
-            attenuation *= color / pdf;            
+            metal_brdf(normal, ray.direction, in_color, material.roughness, &scattered, &out_color, &pdf);
+            attenuation *= out_color / pdf;            
         } else {
             if rand() > 0.5 {
-                diffuse_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
+                diffuse_brdf(normal, ray.direction, in_color, &scattered, &out_color, &pdf);
             } else {
-                glass_brdf(normal, ray.direction, hit.material, &scattered, &color, &pdf);
+                glass_brdf(normal, ray.direction, in_color, material.ior, &scattered, &out_color, &pdf);
             }
-            attenuation *= (color / pdf) * 0.5;
+            attenuation *= (out_color / pdf) * 0.5;
         }
 
         ray = Ray(p, scattered);

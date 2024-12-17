@@ -1,4 +1,3 @@
-use std::io::Write;
 
 pub mod gltf;
 
@@ -6,9 +5,11 @@ pub mod gltf;
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Vertex {
     pos: [f32; 3],
-    _p0: [u32; 1],
+    p0: [u32; 1],
     normal: [f32; 3],
-    _p1: [u32; 1],
+    p1: [u32; 1],
+    uv: [f32; 2],
+    p2: [u32; 2],
 }
 
 #[repr(C)]
@@ -18,6 +19,9 @@ pub struct Material {
     pub roughness: f32,
     pub emission: f32,
     pub ior: f32,
+    pub texture: u32,
+    pub has_texture: u32,
+    pub p0: [u32; 2],
     pub color: [f32; 4],
 }
 
@@ -64,6 +68,7 @@ pub struct SceneDesc {
     pub indices: u32,
     pub materials: u32,
     pub blas_entries: Vec<BlasEntry>,
+    pub textures: Vec<TextureDesc>,
 }
 
 #[derive(Clone, Debug)]
@@ -80,27 +85,38 @@ pub struct BlasGeometry {
     pub index_count: u32,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TextureDesc {
+    pub width: u32,
+    pub height: u32,
+}
+
 pub trait Scene {
     fn load(
         &self,
+        queue: &wgpu::Queue,
         objects: &mut [u8],
         meshes: &mut [u8],
         primitives: &mut [u8],
         vertices: &mut [u8],
         indices: &mut [u8],
         materials: &mut [u8],
+        textures: &[wgpu::Texture],
     ) -> Result<(), Box<dyn std::error::Error>>;
 
     fn desc(&self) -> Result<SceneDesc, Box<dyn std::error::Error>>;
 }
 
 impl Vertex {
-    pub fn new(position: [f32; 3], normal: [f32; 3]) -> Self {
+    pub fn new(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
         Self {
             pos: position,
-            _p0: [0],
+            p0: Default::default(),
             normal,
-            _p1: [0],
+            p1: Default::default(),
+            uv,
+            p2: Default::default(),
         }
     }
 }
@@ -116,13 +132,24 @@ impl Object {
 }
 
 impl Material {
-    pub fn new(metallic: f32, roughness: f32, emission: f32, ior: f32, color: [f32; 4]) -> Self {
+    pub fn new(
+        metallic: f32,
+        roughness: f32,
+        emission: f32,
+        ior: f32,
+        texture: u32,
+        has_texture: u32,
+        color: [f32; 4],
+    ) -> Self {
         Self {
             metallic,
             roughness,
             emission,
             ior,
+            texture,
+            has_texture,
             color,
+            p0: Default::default(),
         }
     }
 }

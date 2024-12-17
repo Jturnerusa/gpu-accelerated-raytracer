@@ -1,10 +1,20 @@
-use std::io::Write;
+use std::{
+    fs::File,
+    io::{self, Write},
+    iter,
+};
 
 use nalgebra::{Matrix4, Perspective3};
 
 use crate::scene::{BlasGeometry, Material, Object};
 
-use super::{BlasEntry, Camera, Mesh, Primitive, SceneDesc, Vertex};
+use super::{BlasEntry, Camera, Mesh, Primitive, SceneDesc, TextureDesc, Vertex};
+
+#[derive(Debug)]
+enum BufferReader<'a> {
+    Bin(&'a [u8]),
+    File(memmap2::Mmap),
+}
 
 #[derive(Clone, Debug)]
 pub struct Scene<'a> {
@@ -17,6 +27,20 @@ impl<'a> Scene<'a> {
         let document = gltf::Gltf::from_slice(json)?.document;
 
         Ok(Self { document, bin })
+    }
+
+    fn read_buffer(
+        &self,
+        buffer: &gltf::Buffer,
+    ) -> Result<BufferReader, Box<dyn std::error::Error>> {
+        Ok(match buffer.source() {
+            gltf::buffer::Source::Bin => BufferReader::Bin(self.bin),
+            gltf::buffer::Source::Uri(uri) => {
+                let file = File::open(uri)?;
+                let mmap = unsafe { memmap2::Mmap::map(&file)? };
+                BufferReader::File(mmap)
+            }
+        })
     }
 
     fn load_meshes(
@@ -121,7 +145,7 @@ impl<'a> Scene<'a> {
             material,
         }))?;
 
-        for (position, normal) in reader
+        for ((position, normal), uv) in reader
             .read_positions()
             .ok_or("failed to read positions".to_string())?
             .zip(
@@ -129,8 +153,16 @@ impl<'a> Scene<'a> {
                     .read_normals()
                     .ok_or("failed to read normals".to_string())?,
             )
+            .zip(match reader.read_tex_coords(0) {
+                Some(texture_coords) => {
+                    Box::new(texture_coords.into_f32()) as Box<dyn Iterator<Item = [f32; 2]>>
+                }
+                None => {
+                    Box::new(iter::repeat(Default::default())) as Box<dyn Iterator<Item = [f32; 2]>>
+                }
+            })
         {
-            vertices.write_all(bytemuck::bytes_of(&Vertex::new(position, normal)))?;
+            vertices.write_all(bytemuck::bytes_of(&Vertex::new(position, normal, uv)))?;
         }
 
         for index in reader
@@ -151,6 +183,20 @@ impl<'a> Scene<'a> {
                 material.pbr_metallic_roughness().roughness_factor(),
                 material.emissive_strength().unwrap_or(0.0),
                 material.ior().unwrap_or(0.0),
+                material
+                    .pbr_metallic_roughness()
+                    .base_color_texture()
+                    .map(|info| info.texture().index() as u32)
+                    .unwrap_or(0),
+                if material
+                    .pbr_metallic_roughness()
+                    .base_color_texture()
+                    .is_some()
+                {
+                    1
+                } else {
+                    0
+                },
                 material.pbr_metallic_roughness().base_color_factor(),
             )))?;
         }
@@ -192,6 +238,77 @@ impl<'a> Scene<'a> {
                     )))?;
                 }
                 None => continue,
+            }
+        }
+
+        Ok(())
+    }
+
+    fn load_textures(
+        &self,
+        queue: &wgpu::Queue,
+        textures: &[wgpu::Texture],
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        for (gltf_texture, gpu_texture) in self.document.textures().zip(textures) {
+            match gltf_texture.source().source() {
+                gltf::image::Source::View { view, .. } => {
+                    let reader = self.read_buffer(&view.buffer())?;
+                    let slice = &reader.as_ref()[view.offset()..view.offset() + view.length()];
+
+                    let image = image::load_from_memory(slice)?.into_rgba32f();
+                    let width = image.width();
+                    let height = image.height();
+                    let image_data = image.to_vec();
+
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: gpu_texture,
+                            mip_level: 0,
+                            aspect: wgpu::TextureAspect::All,
+                            origin: wgpu::Origin3d::ZERO,
+                        },
+                        bytemuck::cast_slice(image_data.as_slice()),
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(width * std::mem::size_of::<f32>() as u32 * 4),
+                            rows_per_image: None,
+                        },
+                        wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+                gltf::image::Source::Uri { uri, .. } => {
+                    let file = File::open(uri)?;
+                    let slice = unsafe { &memmap2::Mmap::map(&file)? };
+
+                    let image = image::load_from_memory(slice)?.into_rgba32f();
+                    let width = image.width();
+                    let height = image.height();
+                    let image_data = image.to_vec();
+
+                    queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: gpu_texture,
+                            mip_level: 0,
+                            aspect: wgpu::TextureAspect::All,
+                            origin: wgpu::Origin3d::ZERO,
+                        },
+                        bytemuck::cast_slice(image_data.as_slice()),
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(width * std::mem::size_of::<f32>() as u32 * 4),
+                            rows_per_image: None,
+                        },
+                        wgpu::Extent3d {
+                            width,
+                            height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
             }
         }
 
@@ -436,21 +553,69 @@ impl<'a> Scene<'a> {
                     Result::<_, Box<dyn std::error::Error>>::Ok(acc + e?)
                 })?)
     }
+
+    pub fn texture_descriptor(
+        &self,
+        texture: &gltf::Texture,
+    ) -> Result<TextureDesc, Box<dyn std::error::Error>> {
+        match texture.source().source() {
+            gltf::image::Source::View { view, .. } => {
+                let reader = self.read_buffer(&view.buffer())?;
+
+                let slice = &reader.as_ref()[view.offset()..view.offset() + view.length()];
+
+                let (width, height) = image::ImageReader::new(io::Cursor::new(slice))
+                    .with_guessed_format()?
+                    .into_dimensions()?;
+
+                Ok(TextureDesc { width, height })
+            }
+            gltf::image::Source::Uri { uri, .. } => {
+                let file = File::open(uri)?;
+                let mmap = unsafe { memmap2::Mmap::map(&file)? };
+
+                let (width, height) = image::ImageReader::new(io::Cursor::new(&mmap))
+                    .with_guessed_format()?
+                    .into_dimensions()?;
+
+                Ok(TextureDesc { width, height })
+            }
+        }
+    }
+
+    fn texture_descriptors(&self) -> Result<Vec<TextureDesc>, Box<dyn std::error::Error>> {
+        self.document
+            .textures()
+            .map(|texture| self.texture_descriptor(&texture))
+            .collect::<Result<Vec<_>, _>>()
+    }
+}
+
+impl<'a> AsRef<[u8]> for BufferReader<'a> {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Bin(bin) => bin,
+            Self::File(mmap) => mmap,
+        }
+    }
 }
 
 impl<'data> super::Scene for Scene<'data> {
     fn load(
         &self,
+        queue: &wgpu::Queue,
         objects: &mut [u8],
         meshes: &mut [u8],
         primitives: &mut [u8],
         vertices: &mut [u8],
         indices: &mut [u8],
         materials: &mut [u8],
+        textures: &[wgpu::Texture],
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.load_meshes(meshes, primitives, vertices, indices)?;
         self.load_objects(objects)?;
         self.load_materials(materials)?;
+        self.load_textures(queue, textures)?;
 
         Ok(())
     }
@@ -507,6 +672,7 @@ impl<'data> super::Scene for Scene<'data> {
             indices: self.index_count()?,
             materials: self.material_count(),
             blas_entries,
+            textures: self.texture_descriptors()?,
         })
     }
 }
