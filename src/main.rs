@@ -35,6 +35,8 @@ struct Args {
     bounces: u32,
     #[arg(long)]
     gui: bool,
+    #[arg(long)]
+    output: Option<PathBuf>,
 }
 
 #[tokio::main]
@@ -173,21 +175,23 @@ async fn run_headless(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std:
 }
 
 fn write_output<W>(args: &Args, state: &mut State<W>) -> Result<(), Box<dyn std::error::Error>> {
-    let mut float_pixel_data = Vec::new();
-    let mut rgba_pixel_data = Vec::new();
+    if let Some(output) = args.output.as_ref() {
+        let mut float_pixel_data = Vec::new();
+        let mut rgba_pixel_data = Vec::new();
 
-    state.download_frame(&mut float_pixel_data)?;
+        state.download_frame(&mut float_pixel_data)?;
 
-    rgba32float_to_rgba8888(float_pixel_data.as_slice(), &mut rgba_pixel_data);
+        rgba32float_to_rgba8888(float_pixel_data.as_slice(), &mut rgba_pixel_data);
 
-    let mut encoder = png::Encoder::new(io::stdout(), args.width, args.height)?;
-
-    encoder.set_color(png::ColorType::Rgb);
-
-    let mut writer = encoder.write_header()?;
-
-    writer.write_image_data(rgba_pixel_data.as_slice())?;
-
+        image::save_buffer_with_format(
+            output,
+            rgba_pixel_data.as_slice(),
+            args.width,
+            args.height,
+            image::ColorType::Rgb8,
+            image::ImageFormat::Png,
+        )?;
+    }
     Ok(())
 }
 
