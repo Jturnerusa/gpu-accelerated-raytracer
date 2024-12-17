@@ -22,7 +22,7 @@ struct Args {
     #[arg(long)]
     width: u32,
     #[arg(long)]
-    aspect_ratio: f32,
+    height: u32,
     #[arg(long)]
     seed: u32,
     #[arg(long)]
@@ -93,11 +93,7 @@ async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std:
     let sdl2_context = sdl2::init()?;
     let sdl2_video = sdl2_context.video()?;
     let window = sdl2_video
-        .window(
-            "raytracer",
-            args.width,
-            (args.width as f32 / args.aspect_ratio) as u32,
-        )
+        .window("raytracer", args.width, args.height)
         .position_centered()
         .resizable()
         .build()?;
@@ -106,14 +102,14 @@ async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std:
 
     let mut state = State::new(Some(WindowDesc {
         width: args.width,
-        height: (args.width as f32 / args.aspect_ratio) as u32,
+        height: args.height,
         window: &window,
     }))
     .await?;
 
     state.load_scene(
         args.width,
-        (args.width as f32 / args.aspect_ratio) as u32,
+        args.height,
         args.seed,
         args.samples,
         args.bounces,
@@ -158,7 +154,7 @@ async fn run_headless(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std:
 
     state.load_scene(
         args.width,
-        (args.width as f32 / args.aspect_ratio) as u32,
+        args.height,
         args.seed,
         args.samples,
         args.bounces,
@@ -184,11 +180,7 @@ fn write_output<W>(args: &Args, state: &mut State<W>) -> Result<(), Box<dyn std:
 
     rgba32float_to_rgba8888(float_pixel_data.as_slice(), &mut rgba_pixel_data);
 
-    let mut encoder = png::Encoder::new(
-        io::stdout(),
-        args.width,
-        (args.width as f32 / args.aspect_ratio) as u32,
-    );
+    let mut encoder = png::Encoder::new(io::stdout(), args.width, args.height)?;
 
     encoder.set_color(png::ColorType::Rgb);
 
