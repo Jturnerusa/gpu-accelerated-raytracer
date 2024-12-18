@@ -2,6 +2,7 @@ use std::{
     fs::File,
     io::{self, Write},
     iter,
+    path::{Path, PathBuf},
 };
 
 use nalgebra::{Matrix4, Perspective3};
@@ -26,6 +27,7 @@ enum BufferReader<'a> {
 pub struct Scene<'a> {
     document: gltf::Document,
     bin: &'a [u8],
+    path: PathBuf,
 }
 
 impl std::fmt::Display for Error {
@@ -44,7 +46,7 @@ impl std::error::Error for Error {
 }
 
 impl<'a> Scene<'a> {
-    pub fn new(json: &'a [u8], bin: &'a [u8]) -> Result<Self, Error> {
+    pub fn new(json: &'a [u8], bin: &'a [u8], path: &Path) -> Result<Self, Error> {
         let document = gltf::Gltf::from_slice(json)
             .map_err(|e| Error {
                 message: "failed to validate scene".to_string(),
@@ -52,7 +54,11 @@ impl<'a> Scene<'a> {
             })?
             .document;
 
-        Ok(Self { document, bin })
+        Ok(Self {
+            document,
+            bin,
+            path: path.to_path_buf().parent().unwrap().to_path_buf(),
+        })
     }
 
     fn read_buffer(&self, buffer: &gltf::Buffer) -> Result<BufferReader, Error> {
@@ -356,20 +362,23 @@ impl<'a> Scene<'a> {
                     );
                 }
                 gltf::image::Source::Uri { uri, .. } => {
-                    let file = File::open(uri).map_err(|e| Error {
-                        message: format!("failed to open {uri}"),
+                    let path = self.path.join(uri);
+
+                    let file = File::open(path.as_path()).map_err(|e| Error {
+                        message: format!("failed to open {}", path.to_str().unwrap()),
                         source: Some(Box::new(e)),
                     })?;
+
                     let slice = unsafe {
                         &memmap2::Mmap::map(&file).map_err(|e| Error {
-                            message: format!("failed to mmap {uri}"),
+                            message: format!("failed to mmap {}", path.to_str().unwrap()),
                             source: Some(Box::new(e)),
                         })?
                     };
 
                     let image = image::load_from_memory(slice)
                         .map_err(|e| Error {
-                            message: format!("failed to load {uri} as image"),
+                            message: format!("failed to load {} as image", path.to_str().unwrap()),
                             source: Some(Box::new(e)),
                         })?
                         .into_rgba8();
@@ -693,14 +702,16 @@ impl<'a> Scene<'a> {
                 Ok(TextureDesc { width, height })
             }
             gltf::image::Source::Uri { uri, .. } => {
-                let file = File::open(uri).map_err(|e| Error {
-                    message: format!("failed to load {uri}"),
+                let path = self.path.join(uri);
+
+                let file = File::open(path.as_path()).map_err(|e| Error {
+                    message: format!("failed to open {}", path.to_str().unwrap()),
                     source: Some(Box::new(e)),
                 })?;
 
                 let mmap = unsafe {
                     memmap2::Mmap::map(&file).map_err(|e| Error {
-                        message: format!("failed to mmap {uri}"),
+                        message: format!("failed to mmap {}", path.to_str().unwrap()),
                         source: Some(Box::new(e)),
                     })?
                 };

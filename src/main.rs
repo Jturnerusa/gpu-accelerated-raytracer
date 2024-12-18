@@ -128,13 +128,14 @@ async fn run() -> Result<(), Error> {
                 source: None,
             })?;
 
-            let scene =
-                Box::new(
-                    crate::scene::gltf::Scene::new(&data, bin).map_err(|e| Error {
+            let scene = Box::new(
+                crate::scene::gltf::Scene::new(&data, bin, args.scene.as_path()).map_err(|e| {
+                    Error {
                         message: "failed to open scene file".to_string(),
                         source: Some(Box::new(e)),
-                    })?,
-                );
+                    }
+                })?,
+            );
 
             if args.gui {
                 run_with_gui(&args, &*scene, camera).await?;
@@ -165,16 +166,17 @@ async fn run() -> Result<(), Error> {
                 })?
             };
 
-            let scene =
-                Box::new(
-                    crate::scene::gltf::Scene::new(&data, &bin).map_err(|e| Error {
+            let scene = Box::new(
+                crate::scene::gltf::Scene::new(&data, &bin, args.scene.as_path()).map_err(|e| {
+                    Error {
                         message: format!(
                             "failed to open scene file {}",
                             args.scene.as_path().to_str().unwrap()
                         ),
                         source: Some(Box::new(e)),
-                    })?,
-                );
+                    }
+                })?,
+            );
 
             if args.gui {
                 run_with_gui(&args, &*scene, camera).await?;
