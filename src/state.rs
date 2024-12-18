@@ -9,6 +9,12 @@ use nalgebra::Matrix4;
 
 use crate::scene::{BlasEntry, Material, Mesh, Object, Primitive, Scene, Vertex};
 
+#[derive(Debug)]
+pub struct Error {
+    message: String,
+    source: Option<Box<dyn std::error::Error>>,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
@@ -58,10 +64,25 @@ pub struct State<'surface, W> {
     pixel_buffer: Option<wgpu::Buffer>,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "state error: {}", self.message)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.source.as_ref() {
+            Some(source) => Some(&**source),
+            None => None,
+        }
+    }
+}
+
 impl<'surface> State<'surface, &'surface sdl2::video::Window> {
     pub async fn new(
         window_desc: Option<WindowDesc<&'surface sdl2::video::Window>>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, Error> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
@@ -69,7 +90,17 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
 
         let surface = match window_desc {
             Some(w) => Some(unsafe {
-                instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::from_window(w.window)?)?
+                instance
+                    .create_surface_unsafe(
+                        wgpu::SurfaceTargetUnsafe::from_window(w.window).map_err(|e| Error {
+                            message: "failed to create surface from sdl2 window".to_string(),
+                            source: Some(Box::new(e)),
+                        })?,
+                    )
+                    .map_err(|e| Error {
+                        message: "failed to create surface".to_string(),
+                        source: Some(Box::new(e)),
+                    })?
             }),
             None => None,
         };
@@ -81,7 +112,10 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
                 force_fallback_adapter: false,
             })
             .await
-            .ok_or("failed to request adapter".to_string())?;
+            .ok_or(Error {
+                message: "failed to request adapter".to_string(),
+                source: None,
+            })?;
 
         let (device, queue) = adapter
             .request_device(
@@ -98,7 +132,11 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
                 },
                 None,
             )
-            .await?;
+            .await
+            .map_err(|e| Error {
+                message: "failed to request device".to_string(),
+                source: Some(Box::new(e))
+            })?;
 
         let surface_config = match &surface {
             Some(surface) => {
@@ -152,8 +190,16 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
         })
     }
 
-    pub fn render(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        let output = self.surface.as_ref().unwrap().get_current_texture()?;
+    pub fn render(&mut self) -> Result<(), Error> {
+        let output = self
+            .surface
+            .as_ref()
+            .unwrap()
+            .get_current_texture()
+            .map_err(|e| Error {
+                message: "failed to get texture".to_string(),
+                source: Some(Box::new(e)),
+            })?;
 
         let view = output
             .texture
@@ -204,7 +250,7 @@ impl<'surface, W> State<'surface, W> {
         self.device.poll(wgpu::MaintainBase::Wait);
     }
 
-    pub fn download_frame(&mut self, data: &mut Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn download_frame(&mut self, data: &mut Vec<u8>) -> Result<(), Error> {
         self.copy_texture_to_buffer();
 
         let (sender, receiver) = sync::mpsc::channel();
@@ -218,7 +264,16 @@ impl<'surface, W> State<'surface, W> {
 
         self.wait();
 
-        receiver.recv()??;
+        receiver
+            .recv()
+            .map_err(|e| Error {
+                message: "failed to map buffer".to_string(),
+                source: Some(Box::new(e)),
+            })?
+            .map_err(|e| Error {
+                message: "failed to receive from sender".to_string(),
+                source: Some(Box::new(e)),
+            })?;
 
         data.extend_from_slice(
             &self
@@ -272,7 +327,7 @@ impl<'surface, W> State<'surface, W> {
         uniforms.current_chunk >= (uniforms.width * uniforms.height) / uniforms.chunk_size
     }
 
-    pub fn process_chunk(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn process_chunk(&mut self) -> Result<(), Error> {
         {
             let uniforms = self.uniforms.as_mut().unwrap();
 
@@ -327,8 +382,11 @@ impl<'surface, W> State<'surface, W> {
         bounces: u32,
         chunk_size: u32,
         scene: &dyn Scene,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let scene_desc = scene.desc()?;
+    ) -> Result<(), Error> {
+        let scene_desc = scene.desc().map_err(|e| Error {
+            message: "failed to read scene description".to_string(),
+            source: Some(e),
+        })?;
 
         let uniforms = Uniforms {
             view: scene_desc.world,
@@ -417,7 +475,10 @@ impl<'surface, W> State<'surface, W> {
                 0,
                 NonZeroU64::new(std::mem::size_of::<Uniforms>() as u64).unwrap(),
             )
-            .ok_or("failed to map buffer".to_string())?;
+            .ok_or(Error {
+                message: "failed to map buffer".to_string(),
+                source: None,
+            })?;
 
         let mut objects_mapped = self
             .queue
@@ -429,7 +490,10 @@ impl<'surface, W> State<'surface, W> {
                 )
                 .unwrap(),
             )
-            .ok_or("failed to map buffer".to_string())?;
+            .ok_or(Error {
+                message: "failed to map buffer".to_string(),
+                source: None,
+            })?;
 
         let mut meshes_mapped = self
             .queue
@@ -439,7 +503,10 @@ impl<'surface, W> State<'surface, W> {
                 NonZeroU64::new((std::mem::size_of::<Mesh>() * scene_desc.meshes as usize) as u64)
                     .unwrap(),
             )
-            .ok_or("failed to map buffer".to_string())?;
+            .ok_or(Error {
+                message: "failed to map buffer".to_string(),
+                source: None,
+            })?;
 
         let mut primitives_mapped = self
             .queue
@@ -451,7 +518,10 @@ impl<'surface, W> State<'surface, W> {
                 )
                 .unwrap(),
             )
-            .ok_or("failed to map buffer".to_string())?;
+            .ok_or(Error {
+                message: "failed to map buffer".to_string(),
+                source: None,
+            })?;
 
         let mut vertices_mapped = self
             .queue
@@ -463,7 +533,10 @@ impl<'surface, W> State<'surface, W> {
                 )
                 .unwrap(),
             )
-            .ok_or("failed to map buffer".to_string())?;
+            .ok_or(Error {
+                message: "failed to map buffer".to_string(),
+                source: None,
+            })?;
 
         let mut indices_mapped = self
             .queue
@@ -473,7 +546,10 @@ impl<'surface, W> State<'surface, W> {
                 NonZeroU64::new((std::mem::size_of::<u32>() * scene_desc.indices as usize) as u64)
                     .unwrap(),
             )
-            .ok_or("failed to map buffer".to_string())?;
+            .ok_or(Error {
+                message: "failed to map buffer".to_string(),
+                source: None,
+            })?;
 
         let mut materials_mapped = self
             .queue
@@ -485,7 +561,10 @@ impl<'surface, W> State<'surface, W> {
                 )
                 .unwrap(),
             )
-            .ok_or("failed to map buffer".to_string())?;
+            .ok_or(Error {
+                message: "failed to map buffer".to_string(),
+                source: None,
+            })?;
 
         let textures = if scene_desc.textures.is_empty() {
             iter::once(create_texture(
@@ -523,16 +602,21 @@ impl<'surface, W> State<'surface, W> {
             .as_mut()
             .copy_from_slice(bytemuck::bytes_of(&uniforms));
 
-        scene.load(
-            &self.queue,
-            objects_mapped.as_mut(),
-            meshes_mapped.as_mut(),
-            primitives_mapped.as_mut(),
-            vertices_mapped.as_mut(),
-            indices_mapped.as_mut(),
-            materials_mapped.as_mut(),
-            textures.as_slice(),
-        )?;
+        scene
+            .load(
+                &self.queue,
+                objects_mapped.as_mut(),
+                meshes_mapped.as_mut(),
+                primitives_mapped.as_mut(),
+                vertices_mapped.as_mut(),
+                indices_mapped.as_mut(),
+                materials_mapped.as_mut(),
+                textures.as_slice(),
+            )
+            .map_err(|e| Error {
+                message: "failed to upload scene".to_string(),
+                source: Some(e),
+            })?;
 
         self.queue.write_buffer(
             &texture_descriptors_buffer,
@@ -968,18 +1052,17 @@ fn make_render_pipeline(
     })
 }
 
-fn write_to_buffer(
-    queue: &wgpu::Queue,
-    buffer: &wgpu::Buffer,
-    data: &[u8],
-) -> Result<(), Box<dyn std::error::Error>> {
+fn write_to_buffer(queue: &wgpu::Queue, buffer: &wgpu::Buffer, data: &[u8]) -> Result<(), Error> {
     let mut mapped = queue
         .write_buffer_with(
             buffer,
             0,
             NonZeroU64::new(std::mem::size_of_val(data) as u64).unwrap(),
         )
-        .ok_or("failed to map buffer".to_string())?;
+        .ok_or(Error {
+            message: "failed to map buffer".to_string(),
+            source: None,
+        })?;
 
     mapped.as_mut().copy_from_slice(data);
 

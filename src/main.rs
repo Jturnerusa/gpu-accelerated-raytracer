@@ -3,10 +3,7 @@
 mod scene;
 mod state;
 
-use std::{
-    fs::File,
-    path::PathBuf,
-};
+use std::{fs::File, path::PathBuf};
 
 use clap::Parser;
 use scene::Scene;
@@ -15,6 +12,12 @@ use state::{State, WindowDesc};
 const WORKGROUP_SIZE_X: usize = 8;
 const WORKGROUP_SIZE_Y: usize = 8;
 const WORKGROUP_SIZE_Z: usize = 1;
+
+#[derive(Debug)]
+struct Error {
+    message: String,
+    source: Option<Box<dyn std::error::Error>>,
+}
 
 #[derive(Clone, Debug, clap::Parser)]
 struct Args {
@@ -38,31 +41,88 @@ struct Args {
     output: Option<PathBuf>,
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ray tracer error: {}", self.message)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.source.as_ref() {
+            Some(source) => Some(&**source),
+            None => None,
+        }
+    }
+}
+
+fn print_error_chain(top: &dyn std::error::Error) {
+    eprintln!("{top}");
+
+    let mut error = top.source();
+    let mut n = 1usize;
+
+    while let Some(e) = &error {
+        let indent = " ".repeat(n);
+
+        eprintln!("{indent}caused by: {e}");
+
+        error = e.source();
+        n += 1;
+    }
+}
+
 #[tokio::main]
 async fn main() {
     match run().await {
         Ok(_) => (),
         Err(e) => {
-            eprintln!("{e}");
+            print_error_chain(&e);
             std::process::exit(1);
         }
     }
 }
 
-async fn run() -> Result<(), Box<dyn std::error::Error>> {
+async fn run() -> Result<(), Error> {
     let args = Args::parse();
 
-    let file = File::open(args.scene.as_path())?;
-    let data = unsafe { memmap2::Mmap::map(&file)? };
+    let file = File::open(args.scene.as_path()).map_err(|e| Error {
+        message: format!(
+            "failed to load scene file {}",
+            args.scene.as_path().to_str().unwrap()
+        ),
+        source: Some(Box::new(e)),
+    })?;
+
+    let data = unsafe {
+        memmap2::Mmap::map(&file).map_err(|e| Error {
+            message: format!(
+                "failed to mmap scene file {}",
+                args.scene.as_path().to_str().unwrap()
+            ),
+            source: Some(Box::new(e)),
+        })?
+    };
 
     match args.scene.as_path().extension().and_then(|s| s.to_str()) {
         Some("glb") => {
-            let glb = gltf::Glb::from_slice(&data)?;
-            let bin = &glb
-                .bin
-                .ok_or("no binary data found in glb file".to_string())?;
+            let glb = gltf::Glb::from_slice(&data).map_err(|e| Error {
+                message: "failed to load scene".to_string(),
+                source: Some(Box::new(e)),
+            })?;
 
-            let scene = Box::new(crate::scene::gltf::Scene::new(&glb.json, bin)?);
+            let bin = &glb.bin.ok_or(Error {
+                message: "no binary data found in glb file".to_string(),
+                source: None,
+            })?;
+
+            let scene =
+                Box::new(
+                    crate::scene::gltf::Scene::new(&data, bin).map_err(|e| Error {
+                        message: "failed to open scene file".to_string(),
+                        source: Some(Box::new(e)),
+                    })?,
+                );
 
             if args.gui {
                 run_with_gui(&args, &*scene).await?;
@@ -73,10 +133,36 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             Ok(())
         }
         Some("gltf") => {
-            let data_file = File::open(args.scene.with_extension("bin"))?;
-            let bin = unsafe { memmap2::Mmap::map(&data_file)? };
+            let bin_path = args.scene.with_extension("bin");
 
-            let scene = Box::new(crate::scene::gltf::Scene::new(&data, &bin)?);
+            let bin_file = File::open(bin_path.as_path()).map_err(|e| Error {
+                message: format!(
+                    "failed to open gltf binary data file {}",
+                    bin_path.to_str().unwrap()
+                ),
+                source: Some(Box::new(e)),
+            })?;
+
+            let bin = unsafe {
+                memmap2::Mmap::map(&bin_file).map_err(|e| Error {
+                    message: format!(
+                        "failed to mmap scene file {}",
+                        bin_path.as_path().to_str().unwrap()
+                    ),
+                    source: Some(Box::new(e)),
+                })?
+            };
+
+            let scene =
+                Box::new(
+                    crate::scene::gltf::Scene::new(&data, &bin).map_err(|e| Error {
+                        message: format!(
+                            "failed to open scene file {}",
+                            args.scene.as_path().to_str().unwrap()
+                        ),
+                        source: Some(Box::new(e)),
+                    })?,
+                );
 
             if args.gui {
                 run_with_gui(&args, &*scene).await?;
@@ -86,41 +172,75 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             Ok(())
         }
-        _ => Err("failed to recognize file format".to_string())?,
+        _ => Err(Error {
+            message: "failed to recognize file format".to_string(),
+            source: None,
+        })?,
     }
 }
 
-async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std::error::Error>> {
-    let sdl2_context = sdl2::init()?;
-    let sdl2_video = sdl2_context.video()?;
+async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Error> {
+    let sdl2_context = sdl2::init().map_err(|e| Error {
+        message: "failed to load sdl2".to_string(),
+        source: Some(e.into()),
+    })?;
+
+    let sdl2_video = sdl2_context.video().map_err(|e| Error {
+        message: "failed to load sdl2 video subsystem".to_string(),
+        source: Some(e.into()),
+    })?;
+
     let window = sdl2_video
         .window("raytracer", args.width, args.height)
         .position_centered()
         .resizable()
-        .build()?;
+        .build()
+        .map_err(|e| Error {
+            message: "failed to load sdl2 window".to_string(),
+            source: Some(e.into()),
+        })?;
 
-    let mut events = sdl2_context.event_pump()?;
+    let mut events = sdl2_context.event_pump().map_err(|e| Error {
+        message: "failed to load sdl2 event pump".to_string(),
+        source: Some(e.into()),
+    })?;
 
     let mut state = State::new(Some(WindowDesc {
         width: args.width,
         height: args.height,
         window: &window,
     }))
-    .await?;
+    .await
+    .map_err(|e| Error {
+        message: "failed to setup state".to_string(),
+        source: Some(Box::new(e)),
+    })?;
 
-    state.load_scene(
-        args.width,
-        args.height,
-        args.seed,
-        args.samples,
-        args.bounces,
-        args.chunk_size,
-        scene,
-    )?;
+    state
+        .load_scene(
+            args.width,
+            args.height,
+            args.seed,
+            args.samples,
+            args.bounces,
+            args.chunk_size,
+            scene,
+        )
+        .map_err(|e| Error {
+            message: "failed to upload scene to gpu".to_string(),
+            source: Some(Box::new(e)),
+        })?;
 
     while !state.is_finished() {
-        state.process_chunk()?;
-        state.render()?;
+        state.process_chunk().map_err(|e| Error {
+            message: "failed to process chunk".to_string(),
+            source: Some(Box::new(e)),
+        })?;
+
+        state.render().map_err(|e| Error {
+            message: "failed to render frame".to_string(),
+            source: Some(Box::new(e)),
+        })?;
 
         for event in events.poll_iter() {
             match event {
@@ -150,21 +270,33 @@ async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-async fn run_headless(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std::error::Error>> {
-    let mut state = State::new(None).await?;
+async fn run_headless(args: &Args, scene: &dyn Scene) -> Result<(), Error> {
+    let mut state = State::new(None).await.map_err(|e| Error {
+        message: "failed to setup state".to_string(),
+        source: Some(Box::new(e)),
+    })?;
 
-    state.load_scene(
-        args.width,
-        args.height,
-        args.seed,
-        args.samples,
-        args.bounces,
-        args.chunk_size,
-        scene,
-    )?;
+    state
+        .load_scene(
+            args.width,
+            args.height,
+            args.seed,
+            args.samples,
+            args.bounces,
+            args.chunk_size,
+            scene,
+        )
+        .map_err(|e| Error {
+            message: "failed to upload scene to gpu".to_string(),
+            source: Some(Box::new(e)),
+        })?;
 
     while !state.is_finished() {
-        state.process_chunk()?;
+        state.process_chunk().map_err(|e| Error {
+            message: "failed to process chunk".to_string(),
+            source: Some(Box::new(e)),
+        })?;
+
         state.wait();
     }
 
@@ -173,12 +305,17 @@ async fn run_headless(args: &Args, scene: &dyn Scene) -> Result<(), Box<dyn std:
     Ok(())
 }
 
-fn write_output<W>(args: &Args, state: &mut State<W>) -> Result<(), Box<dyn std::error::Error>> {
+fn write_output<W>(args: &Args, state: &mut State<W>) -> Result<(), Error> {
     if let Some(output) = args.output.as_ref() {
         let mut float_pixel_data = Vec::new();
         let mut rgba_pixel_data = Vec::new();
 
-        state.download_frame(&mut float_pixel_data)?;
+        state
+            .download_frame(&mut float_pixel_data)
+            .map_err(|e| Error {
+                message: "failed to download frame from gpu".to_string(),
+                source: Some(Box::new(e)),
+            })?;
 
         rgba32float_to_rgba8888(float_pixel_data.as_slice(), &mut rgba_pixel_data);
 
@@ -189,7 +326,11 @@ fn write_output<W>(args: &Args, state: &mut State<W>) -> Result<(), Box<dyn std:
             args.height,
             image::ColorType::Rgb8,
             image::ImageFormat::Png,
-        )?;
+        )
+        .map_err(|e| Error {
+            message: "failed to save output".to_string(),
+            source: Some(Box::new(e)),
+        })?;
     }
     Ok(())
 }

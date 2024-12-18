@@ -11,6 +11,12 @@ use crate::scene::{BlasGeometry, Material, Object};
 use super::{BlasEntry, Camera, Mesh, Primitive, SceneDesc, TextureDesc, Vertex};
 
 #[derive(Debug)]
+pub struct Error {
+    message: String,
+    source: Option<Box<dyn std::error::Error>>,
+}
+
+#[derive(Debug)]
 enum BufferReader<'a> {
     Bin(&'a [u8]),
     File(memmap2::Mmap),
@@ -22,22 +28,49 @@ pub struct Scene<'a> {
     bin: &'a [u8],
 }
 
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "error loading glb or gltf scene: {}", self.message)
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.source.as_ref() {
+            Some(e) => Some(&**e),
+            None => None,
+        }
+    }
+}
+
 impl<'a> Scene<'a> {
-    pub fn new(json: &'a [u8], bin: &'a [u8]) -> Result<Self, Box<dyn std::error::Error>> {
-        let document = gltf::Gltf::from_slice(json)?.document;
+    pub fn new(json: &'a [u8], bin: &'a [u8]) -> Result<Self, Error> {
+        let document = gltf::Gltf::from_slice(json)
+            .map_err(|e| Error {
+                message: "failed to validate scene".to_string(),
+                source: Some(Box::new(e)),
+            })?
+            .document;
 
         Ok(Self { document, bin })
     }
 
-    fn read_buffer(
-        &self,
-        buffer: &gltf::Buffer,
-    ) -> Result<BufferReader, Box<dyn std::error::Error>> {
+    fn read_buffer(&self, buffer: &gltf::Buffer) -> Result<BufferReader, Error> {
         Ok(match buffer.source() {
             gltf::buffer::Source::Bin => BufferReader::Bin(self.bin),
             gltf::buffer::Source::Uri(uri) => {
-                let file = File::open(uri)?;
-                let mmap = unsafe { memmap2::Mmap::map(&file)? };
+                let file = File::open(uri).map_err(|e| Error {
+                    message: format!("failed to open {uri}"),
+                    source: Some(Box::new(e)),
+                })?;
+
+                let mmap = unsafe {
+                    memmap2::Mmap::map(&file).map_err(|e| Error {
+                        message: format!("failed to mmap {uri}"),
+                        source: Some(Box::new(e)),
+                    })?
+                };
+
                 BufferReader::File(mmap)
             }
         })
@@ -49,7 +82,7 @@ impl<'a> Scene<'a> {
         mut primitives: &mut [u8],
         mut vertices: &mut [u8],
         mut indices: &mut [u8],
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Error> {
         let mut vertex_counter = 0;
         let mut index_counter = 0;
 
@@ -77,7 +110,7 @@ impl<'a> Scene<'a> {
         indices: &mut &mut [u8],
         vertex_counter: &mut u32,
         index_counter: &mut u32,
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    ) -> Result<(), Error> {
         let primitive_start = self
             .document
             .meshes()
@@ -87,10 +120,15 @@ impl<'a> Scene<'a> {
 
         let primitive_count = mesh.primitives().count() as u32;
 
-        meshes.write_all(bytemuck::bytes_of(&Mesh {
-            primitive_start,
-            primitive_count,
-        }))?;
+        meshes
+            .write_all(bytemuck::bytes_of(&Mesh {
+                primitive_start,
+                primitive_count,
+            }))
+            .map_err(|e| Error {
+                message: "failed to write mesh to staging buffer".to_string(),
+                source: Some(Box::new(e)),
+            })?;
 
         for primitive in mesh.primitives() {
             self.load_primitive(
@@ -114,45 +152,58 @@ impl<'a> Scene<'a> {
         indices: &mut &mut [u8],
         vertex_counter: &mut u32,
         index_counter: &mut u32,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let reader = primitive.reader(|_| Some(&self.bin));
+    ) -> Result<(), Error> {
+        let reader = primitive.reader(|_| Some(self.bin));
 
         let vertex_start = *vertex_counter;
         let vertex_count = reader
             .read_positions()
-            .ok_or("failed to read positions".to_string())?
+            .ok_or(Error {
+                message: "failed to read positions".to_string(),
+                source: None,
+            })?
             .len() as u32;
         *vertex_counter += vertex_count;
 
         let index_start = *index_counter;
         let index_count = reader
             .read_indices()
-            .ok_or("failed to read indices".to_string())?
+            .ok_or(Error {
+                message: "failed to read indices".to_string(),
+                source: None,
+            })?
             .into_u32()
             .len() as u32;
         *index_counter += index_count;
 
-        let material = primitive
-            .material()
-            .index()
-            .ok_or("no material found for primitive".to_string())? as u32;
+        let material = primitive.material().index().ok_or(Error {
+            message: "no material found for primitive".to_string(),
+            source: None,
+        })? as u32;
 
-        primitives.write_all(bytemuck::bytes_of(&Primitive {
-            vertex_start,
-            vertex_count,
-            index_start,
-            index_count,
-            material,
-        }))?;
+        primitives
+            .write_all(bytemuck::bytes_of(&Primitive {
+                vertex_start,
+                vertex_count,
+                index_start,
+                index_count,
+                material,
+            }))
+            .map_err(|e| Error {
+                message: "failed to write primitive to staging buffer".to_string(),
+                source: Some(Box::new(e)),
+            })?;
 
         for ((position, normal), uv) in reader
             .read_positions()
-            .ok_or("failed to read positions".to_string())?
-            .zip(
-                reader
-                    .read_normals()
-                    .ok_or("failed to read normals".to_string())?,
-            )
+            .ok_or(Error {
+                message: "failed to read positions".to_string(),
+                source: None,
+            })?
+            .zip(reader.read_normals().ok_or(Error {
+                message: "failed to read normals".to_string(),
+                source: None,
+            })?)
             .zip(match reader.read_tex_coords(0) {
                 Some(texture_coords) => {
                     Box::new(texture_coords.into_f32()) as Box<dyn Iterator<Item = [f32; 2]>>
@@ -162,49 +213,67 @@ impl<'a> Scene<'a> {
                 }
             })
         {
-            vertices.write_all(bytemuck::bytes_of(&Vertex::new(position, normal, uv)))?;
+            vertices
+                .write_all(bytemuck::bytes_of(&Vertex::new(position, normal, uv)))
+                .map_err(|e| Error {
+                    message: "failed to write vertices to staging buffer".to_string(),
+                    source: Some(Box::new(e)),
+                })?;
         }
 
         for index in reader
             .read_indices()
-            .ok_or("failed to read indices".to_string())?
+            .ok_or(Error {
+                message: "failed to read indices".to_string(),
+                source: None,
+            })?
             .into_u32()
         {
-            indices.write_all(bytemuck::bytes_of(&index))?;
+            indices
+                .write_all(bytemuck::bytes_of(&index))
+                .map_err(|e| Error {
+                    message: "failed to write indices to staging buffer".to_string(),
+                    source: Some(Box::new(e)),
+                })?;
         }
 
         Ok(())
     }
 
-    fn load_materials(&self, mut materials: &mut [u8]) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_materials(&self, mut materials: &mut [u8]) -> Result<(), Error> {
         for material in self.document.materials() {
-            materials.write_all(bytemuck::bytes_of(&Material::new(
-                material.pbr_metallic_roughness().metallic_factor(),
-                material.pbr_metallic_roughness().roughness_factor(),
-                material.emissive_strength().unwrap_or(0.0),
-                material.ior().unwrap_or(0.0),
-                material
-                    .pbr_metallic_roughness()
-                    .base_color_texture()
-                    .map(|info| info.texture().index() as u32)
-                    .unwrap_or(0),
-                if material
-                    .pbr_metallic_roughness()
-                    .base_color_texture()
-                    .is_some()
-                {
-                    1
-                } else {
-                    0
-                },
-                material.pbr_metallic_roughness().base_color_factor(),
-            )))?;
+            materials
+                .write_all(bytemuck::bytes_of(&Material::new(
+                    material.pbr_metallic_roughness().metallic_factor(),
+                    material.pbr_metallic_roughness().roughness_factor(),
+                    material.emissive_strength().unwrap_or(0.0),
+                    material.ior().unwrap_or(0.0),
+                    material
+                        .pbr_metallic_roughness()
+                        .base_color_texture()
+                        .map(|info| info.texture().index() as u32)
+                        .unwrap_or(0),
+                    if material
+                        .pbr_metallic_roughness()
+                        .base_color_texture()
+                        .is_some()
+                    {
+                        1
+                    } else {
+                        0
+                    },
+                    material.pbr_metallic_roughness().base_color_factor(),
+                )))
+                .map_err(|e| Error {
+                    message: "failed write material to staging buffer".to_string(),
+                    source: Some(Box::new(e)),
+                })?;
         }
 
         Ok(())
     }
 
-    fn load_objects(&self, mut objects: &mut [u8]) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_objects(&self, mut objects: &mut [u8]) -> Result<(), Error> {
         for node in self.document.nodes() {
             match node.mesh() {
                 Some(mesh) => {
@@ -232,10 +301,15 @@ impl<'a> Scene<'a> {
                     .try_into()
                     .unwrap();
 
-                    objects.write_all(bytemuck::bytes_of(&Object::new(
-                        transform,
-                        mesh.index() as u32,
-                    )))?;
+                    objects
+                        .write_all(bytemuck::bytes_of(&Object::new(
+                            transform,
+                            mesh.index() as u32,
+                        )))
+                        .map_err(|e| Error {
+                            message: "failed to write object to staging buffer".to_string(),
+                            source: Some(Box::new(e)),
+                        })?;
                 }
                 None => continue,
             }
@@ -244,18 +318,19 @@ impl<'a> Scene<'a> {
         Ok(())
     }
 
-    fn load_textures(
-        &self,
-        queue: &wgpu::Queue,
-        textures: &[wgpu::Texture],
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn load_textures(&self, queue: &wgpu::Queue, textures: &[wgpu::Texture]) -> Result<(), Error> {
         for (gltf_texture, gpu_texture) in self.document.textures().zip(textures) {
             match gltf_texture.source().source() {
                 gltf::image::Source::View { view, .. } => {
                     let reader = self.read_buffer(&view.buffer())?;
                     let slice = &reader.as_ref()[view.offset()..view.offset() + view.length()];
 
-                    let image = image::load_from_memory(slice)?.into_rgba8();
+                    let image = image::load_from_memory(slice)
+                        .map_err(|e| Error {
+                            message: "failed to load image".to_string(),
+                            source: Some(Box::new(e)),
+                        })?
+                        .into_rgba8();
                     let width = image.width();
                     let height = image.height();
                     let image_data = image.to_vec();
@@ -281,10 +356,23 @@ impl<'a> Scene<'a> {
                     );
                 }
                 gltf::image::Source::Uri { uri, .. } => {
-                    let file = File::open(uri)?;
-                    let slice = unsafe { &memmap2::Mmap::map(&file)? };
+                    let file = File::open(uri).map_err(|e| Error {
+                        message: format!("failed to open {uri}"),
+                        source: Some(Box::new(e)),
+                    })?;
+                    let slice = unsafe {
+                        &memmap2::Mmap::map(&file).map_err(|e| Error {
+                            message: format!("failed to mmap {uri}"),
+                            source: Some(Box::new(e)),
+                        })?
+                    };
 
-                    let image = image::load_from_memory(slice)?.into_rgba8();
+                    let image = image::load_from_memory(slice)
+                        .map_err(|e| Error {
+                            message: format!("failed to load {uri} as image"),
+                            source: Some(Box::new(e)),
+                        })?
+                        .into_rgba8();
                     let width = image.width();
                     let height = image.height();
                     let image_data = image.to_vec();
@@ -315,7 +403,7 @@ impl<'a> Scene<'a> {
         Ok(())
     }
 
-    fn load_camera(&self) -> Result<Option<Camera>, Box<dyn std::error::Error>> {
+    fn load_camera(&self) -> Result<Option<Camera>, Error> {
         let node = match self.document.nodes().find(|node| node.camera().is_some()) {
             Some(node) => node,
             None => return Ok(None),
@@ -346,17 +434,22 @@ impl<'a> Scene<'a> {
         .unwrap();
 
         let projection = match node.camera().unwrap().projection() {
-            gltf::camera::Projection::Orthographic(_) => {
-                Err("does not support orthographic projections".to_string())?
-            }
+            gltf::camera::Projection::Orthographic(_) => Err(Error {
+                message: "todo: support for orthographic projection".to_string(),
+                source: None,
+            })?,
             gltf::camera::Projection::Perspective(perspective) => bytemuck::cast_slice(
                 Perspective3::new(
-                    perspective
-                        .aspect_ratio()
-                        .ok_or("missing aspect_ratio field".to_string())?,
+                    perspective.aspect_ratio().ok_or(Error {
+                        message: "failed to load aspect ratio from camera".to_string(),
+                        source: None,
+                    })?,
                     perspective.yfov(),
                     perspective.znear(),
-                    perspective.zfar().ok_or("missing zfar field".to_string())?,
+                    perspective.zfar().ok_or(Error {
+                        message: "failed to load zfar from camera".to_string(),
+                        source: None,
+                    })?,
                 )
                 .into_inner()
                 .try_inverse()
@@ -388,33 +481,39 @@ impl<'a> Scene<'a> {
             .sum::<usize>() as u32
     }
 
-    fn vertex_count(&self) -> Result<u32, Box<dyn std::error::Error>> {
+    fn vertex_count(&self) -> Result<u32, Error> {
         Ok(self
             .document
             .meshes()
             .flat_map(|mesh| mesh.primitives())
             .try_fold(0, |acc, primitive| {
-                Result::<usize, Box<dyn std::error::Error>>::Ok(
+                Result::<usize, Error>::Ok(
                     acc + primitive
-                        .reader(|_| Some(&self.bin))
+                        .reader(|_| Some(self.bin))
                         .read_positions()
-                        .ok_or("failed to read positions".to_string())?
+                        .ok_or(Error {
+                            message: "failed to read positions".to_string(),
+                            source: None,
+                        })?
                         .len(),
                 )
             })? as u32)
     }
 
-    fn index_count(&self) -> Result<u32, Box<dyn std::error::Error>> {
+    fn index_count(&self) -> Result<u32, Error> {
         Ok(self
             .document
             .meshes()
             .flat_map(|mesh| mesh.primitives())
             .try_fold(0, |acc, primitive| {
-                Result::<usize, Box<dyn std::error::Error>>::Ok(
+                Result::<usize, Error>::Ok(
                     acc + primitive
-                        .reader(|_| Some(&self.bin))
+                        .reader(|_| Some(self.bin))
                         .read_indices()
-                        .ok_or("failed to read positions".to_string())?
+                        .ok_or(Error {
+                            message: "failed to read indices".to_string(),
+                            source: None,
+                        })?
                         .into_u32()
                         .len(),
                 )
@@ -429,7 +528,7 @@ impl<'a> Scene<'a> {
         &self,
         mesh_index: usize,
         primitive_index: usize,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
+    ) -> Result<u32, Error> {
         self.document
             .meshes()
             .nth(mesh_index)
@@ -437,11 +536,14 @@ impl<'a> Scene<'a> {
             .primitives()
             .nth(primitive_index)
             .map(|primitive| {
-                let reader = primitive.reader(|_| Some(&self.bin));
+                let reader = primitive.reader(|_| Some(self.bin));
 
                 Ok(reader
                     .read_positions()
-                    .ok_or("failed to read positions".to_string())?
+                    .ok_or(Error {
+                        message: "failed to read positions".to_string(),
+                        source: None,
+                    })?
                     .len() as u32)
             })
             .unwrap()
@@ -451,7 +553,7 @@ impl<'a> Scene<'a> {
         &self,
         mesh_index: usize,
         primitive_index: usize,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
+    ) -> Result<u32, Error> {
         Ok(self
             .document
             .meshes()
@@ -462,11 +564,14 @@ impl<'a> Scene<'a> {
 
                 Ok(reader
                     .read_positions()
-                    .ok_or("failed to read positions")?
+                    .ok_or(Error {
+                        message: "failed to read positions".to_string(),
+                        source: None,
+                    })?
                     .len() as u32)
             })
-            .try_fold(0, |acc, e: Result<_, Box<dyn std::error::Error>>| {
-                Result::<_, Box<dyn std::error::Error>>::Ok(acc + e?)
+            .try_fold(0, |acc, e: Result<_, Error>| {
+                Result::<_, Error>::Ok(acc + e?)
             })?
             + self
                 .document
@@ -476,15 +581,18 @@ impl<'a> Scene<'a> {
                 .primitives()
                 .take(primitive_index)
                 .map(|primitive| {
-                    let reader = primitive.reader(|_| Some(&self.bin));
+                    let reader = primitive.reader(|_| Some(self.bin));
 
                     Ok(reader
                         .read_positions()
-                        .ok_or("failed to read positions")?
+                        .ok_or(Error {
+                            message: "failed to read positions".to_string(),
+                            source: None,
+                        })?
                         .len() as u32)
                 })
-                .try_fold(0, |acc, e: Result<_, Box<dyn std::error::Error>>| {
-                    Result::<_, Box<dyn std::error::Error>>::Ok(acc + e?)
+                .try_fold(0, |acc, e: Result<_, Error>| {
+                    Result::<_, Error>::Ok(acc + e?)
                 })?)
     }
 
@@ -492,7 +600,7 @@ impl<'a> Scene<'a> {
         &self,
         mesh_index: usize,
         primitive_index: usize,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
+    ) -> Result<u32, Error> {
         self.document
             .meshes()
             .nth(mesh_index)
@@ -500,11 +608,14 @@ impl<'a> Scene<'a> {
             .primitives()
             .nth(primitive_index)
             .map(|primitive| {
-                let reader = primitive.reader(|_| Some(&self.bin));
+                let reader = primitive.reader(|_| Some(self.bin));
 
                 Ok(reader
                     .read_indices()
-                    .ok_or("failed to read indices".to_string())?
+                    .ok_or(Error {
+                        message: "failed to read indices".to_string(),
+                        source: None,
+                    })?
                     .into_u32()
                     .len() as u32)
             })
@@ -515,7 +626,7 @@ impl<'a> Scene<'a> {
         &self,
         mesh_index: usize,
         primitive_index: usize,
-    ) -> Result<u32, Box<dyn std::error::Error>> {
+    ) -> Result<u32, Error> {
         Ok(self
             .document
             .meshes()
@@ -526,12 +637,15 @@ impl<'a> Scene<'a> {
 
                 Ok(reader
                     .read_indices()
-                    .ok_or("failed to read indices")?
+                    .ok_or(Error {
+                        message: "failed to load indices".to_string(),
+                        source: None,
+                    })?
                     .into_u32()
                     .len() as u32)
             })
-            .try_fold(0, |acc, e: Result<_, Box<dyn std::error::Error>>| {
-                Result::<_, Box<dyn std::error::Error>>::Ok(acc + e?)
+            .try_fold(0, |acc, e: Result<_, Error>| {
+                Result::<_, Error>::Ok(acc + e?)
             })?
             + self
                 .document
@@ -545,19 +659,19 @@ impl<'a> Scene<'a> {
 
                     Ok(reader
                         .read_indices()
-                        .ok_or("failed to read indices")?
+                        .ok_or(Error {
+                            message: "failed to read indices".to_string(),
+                            source: None,
+                        })?
                         .into_u32()
                         .len() as u32)
                 })
-                .try_fold(0, |acc, e: Result<_, Box<dyn std::error::Error>>| {
-                    Result::<_, Box<dyn std::error::Error>>::Ok(acc + e?)
+                .try_fold(0, |acc, e: Result<_, Error>| {
+                    Result::<_, Error>::Ok(acc + e?)
                 })?)
     }
 
-    pub fn texture_descriptor(
-        &self,
-        texture: &gltf::Texture,
-    ) -> Result<TextureDesc, Box<dyn std::error::Error>> {
+    pub fn texture_descriptor(&self, texture: &gltf::Texture) -> Result<TextureDesc, Error> {
         match texture.source().source() {
             gltf::image::Source::View { view, .. } => {
                 let reader = self.read_buffer(&view.buffer())?;
@@ -565,25 +679,50 @@ impl<'a> Scene<'a> {
                 let slice = &reader.as_ref()[view.offset()..view.offset() + view.length()];
 
                 let (width, height) = image::ImageReader::new(io::Cursor::new(slice))
-                    .with_guessed_format()?
-                    .into_dimensions()?;
+                    .with_guessed_format()
+                    .map_err(|e| Error {
+                        message: "failed load texture image".to_string(),
+                        source: Some(Box::new(e)),
+                    })?
+                    .into_dimensions()
+                    .map_err(|e| Error {
+                        message: "failed to load texture image".to_string(),
+                        source: Some(Box::new(e)),
+                    })?;
 
                 Ok(TextureDesc { width, height })
             }
             gltf::image::Source::Uri { uri, .. } => {
-                let file = File::open(uri)?;
-                let mmap = unsafe { memmap2::Mmap::map(&file)? };
+                let file = File::open(uri).map_err(|e| Error {
+                    message: format!("failed to load {uri}"),
+                    source: Some(Box::new(e)),
+                })?;
+
+                let mmap = unsafe {
+                    memmap2::Mmap::map(&file).map_err(|e| Error {
+                        message: format!("failed to mmap {uri}"),
+                        source: Some(Box::new(e)),
+                    })?
+                };
 
                 let (width, height) = image::ImageReader::new(io::Cursor::new(&mmap))
-                    .with_guessed_format()?
-                    .into_dimensions()?;
+                    .with_guessed_format()
+                    .map_err(|e| Error {
+                        message: "failed load texture image".to_string(),
+                        source: Some(Box::new(e)),
+                    })?
+                    .into_dimensions()
+                    .map_err(|e| Error {
+                        message: "failed to load texture image".to_string(),
+                        source: Some(Box::new(e)),
+                    })?;
 
                 Ok(TextureDesc { width, height })
             }
         }
     }
 
-    fn texture_descriptors(&self) -> Result<Vec<TextureDesc>, Box<dyn std::error::Error>> {
+    fn texture_descriptors(&self) -> Result<Vec<TextureDesc>, Error> {
         self.document
             .textures()
             .map(|texture| self.texture_descriptor(&texture))
@@ -623,7 +762,10 @@ impl<'data> super::Scene for Scene<'data> {
     fn desc(&self) -> Result<super::SceneDesc, Box<dyn std::error::Error>> {
         let camera = match self.load_camera() {
             Ok(Some(camera)) => camera,
-            Ok(None) => Err("failed to load camera from scene".to_string())?,
+            Ok(None) => Err(Error {
+                message: "failed to load camera from scene".to_string(),
+                source: None,
+            })?,
             Err(e) => Err(e)?,
         };
 
