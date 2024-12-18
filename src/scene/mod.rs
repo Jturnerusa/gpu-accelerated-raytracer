@@ -1,4 +1,3 @@
-
 pub mod gltf;
 
 #[repr(C)]
@@ -59,8 +58,6 @@ pub struct Camera {
 
 #[derive(Clone, Debug)]
 pub struct SceneDesc {
-    pub world: [[f32; 4]; 4],
-    pub projection: [[f32; 4]; 4],
     pub objects: u32,
     pub meshes: u32,
     pub primitives: u32,
@@ -106,6 +103,8 @@ pub trait Scene {
     ) -> Result<(), Box<dyn std::error::Error>>;
 
     fn desc(&self) -> Result<SceneDesc, Box<dyn std::error::Error>>;
+
+    fn load_camera(&self) -> Result<Option<Camera>, Box<dyn std::error::Error>>;
 }
 
 impl Vertex {

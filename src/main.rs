@@ -3,10 +3,11 @@
 mod scene;
 mod state;
 
-use std::{fs::File, path::PathBuf};
+use std::{fs::File, io::Read, path::PathBuf};
 
 use clap::Parser;
-use scene::Scene;
+use nalgebra::{Perspective3, Vector3};
+use scene::{Camera, Scene};
 use state::{State, WindowDesc};
 
 const WORKGROUP_SIZE_X: usize = 8;
@@ -17,6 +18,13 @@ const WORKGROUP_SIZE_Z: usize = 1;
 struct Error {
     message: String,
     source: Option<Box<dyn std::error::Error>>,
+}
+
+#[derive(Clone, Copy, Debug, serde::Deserialize)]
+struct LookAt {
+    origin: Vector3<f32>,
+    at: Vector3<f32>,
+    fov: f32,
 }
 
 #[derive(Clone, Debug, clap::Parser)]
@@ -39,6 +47,8 @@ struct Args {
     gui: bool,
     #[arg(long)]
     output: Option<PathBuf>,
+    #[arg(long)]
+    camera: Option<PathBuf>,
 }
 
 impl std::fmt::Display for Error {
@@ -104,6 +114,8 @@ async fn run() -> Result<(), Error> {
         })?
     };
 
+    let camera = load_camera(&args)?;
+
     match args.scene.as_path().extension().and_then(|s| s.to_str()) {
         Some("glb") => {
             let glb = gltf::Glb::from_slice(&data).map_err(|e| Error {
@@ -125,9 +137,9 @@ async fn run() -> Result<(), Error> {
                 );
 
             if args.gui {
-                run_with_gui(&args, &*scene).await?;
+                run_with_gui(&args, &*scene, camera).await?;
             } else {
-                run_headless(&args, &*scene).await?;
+                run_headless(&args, &*scene, camera).await?;
             }
 
             Ok(())
@@ -165,9 +177,9 @@ async fn run() -> Result<(), Error> {
                 );
 
             if args.gui {
-                run_with_gui(&args, &*scene).await?;
+                run_with_gui(&args, &*scene, camera).await?;
             } else {
-                run_headless(&args, &*scene).await?;
+                run_headless(&args, &*scene, camera).await?;
             }
 
             Ok(())
@@ -179,7 +191,7 @@ async fn run() -> Result<(), Error> {
     }
 }
 
-async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Error> {
+async fn run_with_gui(args: &Args, scene: &dyn Scene, camera: Option<Camera>) -> Result<(), Error> {
     let sdl2_context = sdl2::init().map_err(|e| Error {
         message: "failed to load sdl2".to_string(),
         source: Some(e.into()),
@@ -224,6 +236,7 @@ async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Error> {
             args.samples,
             args.bounces,
             args.chunk_size,
+            camera,
             scene,
         )
         .map_err(|e| Error {
@@ -270,7 +283,7 @@ async fn run_with_gui(args: &Args, scene: &dyn Scene) -> Result<(), Error> {
     Ok(())
 }
 
-async fn run_headless(args: &Args, scene: &dyn Scene) -> Result<(), Error> {
+async fn run_headless(args: &Args, scene: &dyn Scene, camera: Option<Camera>) -> Result<(), Error> {
     let mut state = State::new(None).await.map_err(|e| Error {
         message: "failed to setup state".to_string(),
         source: Some(Box::new(e)),
@@ -284,6 +297,7 @@ async fn run_headless(args: &Args, scene: &dyn Scene) -> Result<(), Error> {
             args.samples,
             args.bounces,
             args.chunk_size,
+            camera,
             scene,
         )
         .map_err(|e| Error {
@@ -355,4 +369,51 @@ fn find_best_chunk_size(max: u32, width: u32, wgx: u32, wgy: u32) -> u32 {
         }
     }
     1
+}
+
+fn load_camera(args: &Args) -> Result<Option<Camera>, Error> {
+    match args.camera.as_ref() {
+        Some(camera_path) => {
+            let mut buff = String::new();
+
+            let mut file = File::open(camera_path).map_err(|e| Error {
+                message: "failed to open camera file".to_string(),
+                source: Some(Box::new(e)),
+            })?;
+
+            file.read_to_string(&mut buff).map_err(|e| Error {
+                message: "failed to read camera file".to_string(),
+                source: Some(Box::new(e)),
+            })?;
+
+            let lookat: LookAt = serde_json::from_str(buff.as_str()).map_err(|e| Error {
+                message: "failed to parse camera".to_string(),
+                source: Some(Box::new(e)),
+            })?;
+
+            let world = bytemuck::cast_slice(
+                nalgebra_glm::look_at(&lookat.origin, &lookat.at, &Vector3::y()).as_slice(),
+            )
+            .try_into()
+            .unwrap();
+
+            let projection = bytemuck::cast_slice(
+                Perspective3::new(
+                    args.width as f32 / args.height as f32,
+                    lookat.fov,
+                    100.0,
+                    0.001,
+                )
+                .into_inner()
+                .try_inverse()
+                .unwrap()
+                .as_slice(),
+            )
+            .try_into()
+            .unwrap();
+
+            Ok(Some(Camera { world, projection }))
+        }
+        None => Ok(None),
+    }
 }

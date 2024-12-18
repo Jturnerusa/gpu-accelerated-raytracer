@@ -760,15 +760,6 @@ impl<'data> super::Scene for Scene<'data> {
     }
 
     fn desc(&self) -> Result<super::SceneDesc, Box<dyn std::error::Error>> {
-        let camera = match self.load_camera() {
-            Ok(Some(camera)) => camera,
-            Ok(None) => Err(Error {
-                message: "failed to load camera from scene".to_string(),
-                source: None,
-            })?,
-            Err(e) => Err(e)?,
-        };
-
         let blas_entries = self
             .document
             .nodes()
@@ -805,8 +796,6 @@ impl<'data> super::Scene for Scene<'data> {
             .collect::<Result<_, Box<dyn std::error::Error>>>()?;
 
         Ok(SceneDesc {
-            world: camera.world,
-            projection: camera.projection,
             objects: self.object_count(),
             meshes: self.mesh_count(),
             primitives: self.primitive_count(),
@@ -816,5 +805,9 @@ impl<'data> super::Scene for Scene<'data> {
             blas_entries,
             textures: self.texture_descriptors()?,
         })
+    }
+
+    fn load_camera(&self) -> Result<Option<Camera>, Box<dyn std::error::Error>> {
+        Ok(self.load_camera()?)
     }
 }

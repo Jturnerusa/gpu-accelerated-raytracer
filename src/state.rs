@@ -7,7 +7,7 @@ use std::{
 
 use nalgebra::Matrix4;
 
-use crate::scene::{BlasEntry, Material, Mesh, Object, Primitive, Scene, Vertex};
+use crate::scene::{BlasEntry, Camera, Material, Mesh, Object, Primitive, Scene, Vertex};
 
 #[derive(Debug)]
 pub struct Error {
@@ -381,6 +381,7 @@ impl<'surface, W> State<'surface, W> {
         samples: u32,
         bounces: u32,
         chunk_size: u32,
+        camera: Option<Camera>,
         scene: &dyn Scene,
     ) -> Result<(), Error> {
         let scene_desc = scene.desc().map_err(|e| Error {
@@ -388,9 +389,24 @@ impl<'surface, W> State<'surface, W> {
             source: Some(e),
         })?;
 
+        let camera = match camera {
+            Some(camera) => camera,
+            None => match scene.load_camera() {
+                Ok(Some(camera)) => camera,
+                Ok(None) => Err(Error {
+                    message: "failed to load camera from scene".to_string(),
+                    source: None,
+                })?,
+                Err(e) => Err(Error {
+                    message: "failed to load camera from scene".to_string(),
+                    source: Some(e),
+                })?,
+            },
+        };
+
         let uniforms = Uniforms {
-            view: scene_desc.world,
-            perspective: scene_desc.projection,
+            view: camera.world,
+            perspective: camera.projection,
             width,
             height,
             objects: scene_desc.objects,
