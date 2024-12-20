@@ -216,13 +216,6 @@ fn glass_brdf(normal: vec3f,
     (*pdf) = 1.0;
 }
 
-fn tri_normal(tri: Tri) -> vec3f {
-    let v0v1 = tri.v1.pos - tri.v0.pos;
-    let v0v2 = tri.v2.pos - tri.v0.pos;
-
-    return normalize(cross(v0v1, v0v2));
-}
-
 fn get_intersection_data(intersection: RayIntersection) -> Hit {
     let object = OBJECT_BUFFER[intersection.instance_custom_index];
     let mesh = MESH_BUFFER[object.mesh];
@@ -249,13 +242,10 @@ fn get_intersection_data(intersection: RayIntersection) -> Hit {
     let v1 = VERTEX_BUFFER[vi1];
     let v2 = VERTEX_BUFFER[vi2];
 
-    let tri = Tri(v0, v1, v2);
-
-    let normal = tri_normal(tri);
-
     let bary = vec3f(1.0 - intersection.barycentrics.x - intersection.barycentrics.y,
                      intersection.barycentrics);
 
+    let normal = v0.normal * bary.x + v1.normal * bary.y + v2.normal * bary.z;
     let pos = v0.pos * bary.x + v1.pos * bary.y + v2.pos * bary.z;
     var uv = v0.uv * bary.x + v1.uv * bary.y + v2.uv * bary.z;
 
@@ -302,34 +292,27 @@ fn pixel_color(pixel: vec2f) -> vec4f {
         bounces -= 1u;
         
         let hit = get_intersection_data(intersection);
-        let p = ray_at(ray, intersection.t);
+        let p = (intersection.object_to_world * vec4f(hit.pos, 0.0)).xyz;
         let material = MATERIAL_BUFFER[hit.material];
         var in_color = vec4f();
-        var normal = vec3f();
 
         if material.has_texture == 1 {
             in_color = textureSampleLevel(TEXTURES[material.texture], SAMPLER, hit.uv, 0.0);
         } else {
             in_color = material.color;
-        }
-        
-        if dot(hit.normal, ray.direction) > 0.0 {
-            normal = hit.normal;
-        } else {
-            normal = -hit.normal;
-        }
+        }       
                
         if material.emission > 0.0 {
             radiance += material.color * material.emission;
             break;
         } else if material.metallic > 0.0 {
-            metal_brdf(normal, ray.direction, in_color, material.roughness, &scattered, &out_color, &pdf);
+            metal_brdf(hit.normal, ray.direction, in_color, material.roughness, &scattered, &out_color, &pdf);
             attenuation *= out_color / pdf;            
         } else {
             if rand() > 0.5 {
-                diffuse_brdf(normal, ray.direction, in_color, &scattered, &out_color, &pdf);
+                diffuse_brdf(hit.normal, ray.direction, in_color, &scattered, &out_color, &pdf);
             } else {
-                glass_brdf(normal, ray.direction, in_color, material.ior, &scattered, &out_color, &pdf);
+                glass_brdf(hit.normal, ray.direction, in_color, material.ior, &scattered, &out_color, &pdf);
             }
             attenuation *= (out_color / pdf) * 0.5;
         }
