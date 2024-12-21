@@ -25,18 +25,21 @@ var<storage, read> INDEX_BUFFER: array<u32>;
 var<storage, read> MATERIAL_BUFFER: array<Material>;
 
 @group(0) @binding(7)
-var<storage, read> TEXTURE_DESCRIPTOR_BUFFER: array<TextureDesc>;
+var<storage, read> LIGHT_BUFFER: array<Light>;
 
 @group(0) @binding(8)
-var TLAS: acceleration_structure;
+var<storage, read> TEXTURE_DESCRIPTOR_BUFFER: array<TextureDesc>;
 
 @group(0) @binding(9)
-var SAMPLES: texture_storage_2d<rgba32float, read_write>;
+var TLAS: acceleration_structure;
 
 @group(0) @binding(10)
-var TEXTURES: binding_array<texture_2d<f32>>;
+var SAMPLES: texture_storage_2d<rgba32float, read_write>;
 
 @group(0) @binding(11)
+var TEXTURES: binding_array<texture_2d<f32>>;
+
+@group(0) @binding(12)
 var SAMPLER: sampler;
 
 var<private> RNG: u32 = 0;
@@ -56,6 +59,7 @@ struct Uniforms {
     width: u32,
     height: u32,
     objects: u32,
+    lights: u32,
     chunk_size: u32,
     bounces: u32,
     seed: u32,
@@ -97,6 +101,12 @@ struct Material {
     color: vec4f
 }
 
+struct Light {
+    transform: mat4x4f,
+    color: vec4f,
+    power: f32
+}
+
 struct TextureDesc {
     width: u32,
     height: u32
@@ -112,6 +122,10 @@ struct Hit {
     normal: vec3f,
     pos: vec3f,
     uv: vec2f,
+}
+
+struct LightSample {
+    radiance: vec4f,
 }
 
 struct Tri {
@@ -149,6 +163,32 @@ fn random_unit_vec() -> vec3f {
 
 fn square(x: f32) -> f32 {
     return x * x;
+}
+
+fn random_light() -> Light {
+    let i = u32(rand() * f32(UNIFORMS.lights));
+
+    return LIGHT_BUFFER[i];
+}
+
+fn light_is_blocked(p: vec3f, light: Light) -> bool {
+    let light_position = (light.transform * vec4f(0.0, 0.0, 0.0, 1.0)).xyz;
+
+    let ray = Ray(p, normalize(light_position - p));
+
+    let intersection = ray_query(ray, 0.0, distance(light_position, p));
+
+    if intersection.kind == RAY_QUERY_INTERSECTION_NONE {
+        return false;
+    } else {
+        return true;
+    }
+}
+
+fn sample_light(p: vec3f, light: Light) -> vec4f {
+    let light_position = (light.transform * vec4f(0.0, 0.0, 0.0, 1.0)).xyz;
+
+    return light.color / sqrt(distance(light_position, p));
 }
 
 fn sample_unit_disk(u: vec2f) -> vec2f {
@@ -292,10 +332,20 @@ fn pixel_color(pixel: vec2f) -> vec4f {
         bounces -= 1u;
         
         let hit = get_intersection_data(intersection);
-        let p = (intersection.object_to_world * vec4f(hit.pos, 0.0)).xyz;
         let material = MATERIAL_BUFFER[hit.material];
-        var in_color = vec4f();
+        
+        var normal = vec3f();
+        
+        if dot(ray.direction, hit.normal) < 0.0 {
+            normal = hit.normal;
+        } else {
+            normal = -hit.normal;
+        }
 
+        let p = (intersection.object_to_world * vec4f(hit.pos, 0.0)).xyz + normal * F32_EPSILON;
+
+        var in_color = vec4f();
+        
         if material.has_texture == 1 {
             in_color = textureSampleLevel(TEXTURES[material.texture], SAMPLER, hit.uv, 0.0);
         } else {
@@ -306,15 +356,21 @@ fn pixel_color(pixel: vec2f) -> vec4f {
             radiance += material.color * material.emission;
             break;
         } else if material.metallic > 0.0 {
-            metal_brdf(hit.normal, ray.direction, in_color, material.roughness, &scattered, &out_color, &pdf);
+            metal_brdf(normal, ray.direction, in_color, material.roughness, &scattered, &out_color, &pdf);
             attenuation *= out_color / pdf;            
         } else {
             if rand() > 0.5 {
-                diffuse_brdf(hit.normal, ray.direction, in_color, &scattered, &out_color, &pdf);
+                diffuse_brdf(normal, ray.direction, in_color, &scattered, &out_color, &pdf);
             } else {
-                glass_brdf(hit.normal, ray.direction, in_color, material.ior, &scattered, &out_color, &pdf);
+                glass_brdf(normal, ray.direction, in_color, material.ior, &scattered, &out_color, &pdf);
             }
             attenuation *= (out_color / pdf) * 0.5;
+        }
+
+        let light = random_light();
+
+        if !light_is_blocked(p, light) {
+            radiance += sample_light(p, light) / (1.0 / f32(UNIFORMS.lights));
         }
 
         ray = Ray(p, scattered);

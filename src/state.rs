@@ -7,7 +7,9 @@ use std::{
 
 use nalgebra::Matrix4;
 
-use crate::scene::{BlasEntry, Camera, Material, Mesh, Object, Primitive, Scene, Vertex};
+use crate::scene::{
+    BlasEntry, Camera, Light, Material, Mesh, Object, Primitive, Scene, TextureDesc, Vertex,
+};
 
 #[derive(Debug)]
 pub struct Error {
@@ -23,11 +25,13 @@ struct Uniforms {
     width: u32,
     height: u32,
     objects: u32,
+    lights: u32,
     chunk_size: u32,
     bounces: u32,
     seed: u32,
     current_chunk: u32,
     samples: u32,
+    p0: [u32; 3],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -56,6 +60,7 @@ pub struct State<'surface, W> {
     vertex_buffer: Option<wgpu::Buffer>,
     index_buffer: Option<wgpu::Buffer>,
     materials_buffer: Option<wgpu::Buffer>,
+    lights_buffer: Option<wgpu::Buffer>,
     texture_descriptors_buffer: Option<wgpu::Buffer>,
     textures: Option<Vec<wgpu::Texture>>,
     tlas: Option<wgpu::TlasPackage>,
@@ -181,6 +186,7 @@ impl<'surface> State<'surface, &'surface sdl2::video::Window> {
             vertex_buffer: None,
             index_buffer: None,
             materials_buffer: None,
+            lights_buffer: None,
             textures: None,
             texture_descriptors_buffer: None,
             tlas: None,
@@ -410,11 +416,13 @@ impl<'surface, W> State<'surface, W> {
             width,
             height,
             objects: scene_desc.objects,
+            lights: scene_desc.lights,
             bounces,
             current_chunk: 0,
             chunk_size,
             seed,
             samples,
+            p0: Default::default(),
         };
 
         let uniforms_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -470,9 +478,16 @@ impl<'surface, W> State<'surface, W> {
             mapped_at_creation: false,
         });
 
+        let lights_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lights buffer"),
+            size: (std::mem::size_of::<Light>() as u32 * scene_desc.lights) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         let texture_descriptors_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("texture descriptors buffer"),
-            size: (std::mem::size_of::<Material>() as u32 * scene_desc.materials) as u64,
+            size: (std::mem::size_of::<TextureDesc>() as u32 * scene_desc.materials) as u64,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -582,6 +597,19 @@ impl<'surface, W> State<'surface, W> {
                 source: None,
             })?;
 
+        let mut lights_mapped = self
+            .queue
+            .write_buffer_with(
+                &lights_buffer,
+                0,
+                NonZeroU64::new((std::mem::size_of::<Light>() * scene_desc.lights as usize) as u64)
+                    .unwrap(),
+            )
+            .ok_or(Error {
+                message: "failed to map buffer".to_string(),
+                source: None,
+            })?;
+
         let textures = if scene_desc.textures.is_empty() {
             iter::once(create_texture(
                 &self.device,
@@ -627,6 +655,7 @@ impl<'surface, W> State<'surface, W> {
                 vertices_mapped.as_mut(),
                 indices_mapped.as_mut(),
                 materials_mapped.as_mut(),
+                lights_mapped.as_mut(),
                 textures.as_slice(),
             )
             .map_err(|e| Error {
@@ -647,6 +676,7 @@ impl<'surface, W> State<'surface, W> {
         drop(vertices_mapped);
         drop(indices_mapped);
         drop(materials_mapped);
+        drop(lights_mapped);
 
         self.queue.submit(iter::empty());
 
@@ -685,6 +715,7 @@ impl<'surface, W> State<'surface, W> {
             &vertex_buffer,
             &index_buffer,
             &materials_buffer,
+            &lights_buffer,
             &texture_descriptors_buffer,
             &samples_view,
             texture_views.iter().collect::<Vec<_>>().as_slice(),
@@ -715,6 +746,7 @@ impl<'surface, W> State<'surface, W> {
         self.vertex_buffer = Some(vertex_buffer);
         self.index_buffer = Some(index_buffer);
         self.materials_buffer = Some(materials_buffer);
+        self.lights_buffer = Some(lights_buffer);
         self.texture_descriptors_buffer = Some(texture_descriptors_buffer);
         self.textures = Some(textures);
         self.tlas = Some(tlas_package);
@@ -831,7 +863,7 @@ fn make_bind_group_layout(device: &wgpu::Device, textures_count: u32) -> wgpu::B
                 },
                 count: None,
             },
-            // texture descriptors
+            // lights
             wgpu::BindGroupLayoutEntry {
                 binding: 7,
                 visibility: wgpu::ShaderStages::COMPUTE,
@@ -842,16 +874,27 @@ fn make_bind_group_layout(device: &wgpu::Device, textures_count: u32) -> wgpu::B
                 },
                 count: None,
             },
-            // tlas
+            // texture descriptors
             wgpu::BindGroupLayoutEntry {
                 binding: 8,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            // tlas
+            wgpu::BindGroupLayoutEntry {
+                binding: 9,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::AccelerationStructure,
                 count: None,
             },
             // samples
             wgpu::BindGroupLayoutEntry {
-                binding: 9,
+                binding: 10,
                 visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::StorageTexture {
                     access: wgpu::StorageTextureAccess::ReadWrite,
@@ -862,7 +905,7 @@ fn make_bind_group_layout(device: &wgpu::Device, textures_count: u32) -> wgpu::B
             },
             // textures
             wgpu::BindGroupLayoutEntry {
-                binding: 10,
+                binding: 11,
                 visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Texture {
                     multisampled: false,
@@ -871,8 +914,9 @@ fn make_bind_group_layout(device: &wgpu::Device, textures_count: u32) -> wgpu::B
                 },
                 count: Some(NonZeroU32::new(textures_count).unwrap()),
             },
+            // sampler
             wgpu::BindGroupLayoutEntry {
-                binding: 11,
+                binding: 12,
                 visibility: wgpu::ShaderStages::COMPUTE | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 count: None,
@@ -891,6 +935,7 @@ fn make_bind_group(
     vertex_buffer: &wgpu::Buffer,
     index_buffer: &wgpu::Buffer,
     materials_buffer: &wgpu::Buffer,
+    lights_buffer: &wgpu::Buffer,
     texture_descriptors_buffer: &wgpu::Buffer,
     samples_view: &wgpu::TextureView,
     texture_views: &[&wgpu::TextureView],
@@ -960,25 +1005,33 @@ fn make_bind_group(
             wgpu::BindGroupEntry {
                 binding: 7,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                    buffer: texture_descriptors_buffer,
+                    buffer: lights_buffer,
                     offset: 0,
                     size: None,
                 }),
             },
             wgpu::BindGroupEntry {
                 binding: 8,
-                resource: wgpu::BindingResource::AccelerationStructure(tlas_package.tlas()),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: texture_descriptors_buffer,
+                    offset: 0,
+                    size: None,
+                }),
             },
             wgpu::BindGroupEntry {
                 binding: 9,
-                resource: wgpu::BindingResource::TextureView(samples_view),
+                resource: wgpu::BindingResource::AccelerationStructure(tlas_package.tlas()),
             },
             wgpu::BindGroupEntry {
                 binding: 10,
-                resource: wgpu::BindingResource::TextureViewArray(texture_views),
+                resource: wgpu::BindingResource::TextureView(samples_view),
             },
             wgpu::BindGroupEntry {
                 binding: 11,
+                resource: wgpu::BindingResource::TextureViewArray(texture_views),
+            },
+            wgpu::BindGroupEntry {
+                binding: 12,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
         ],

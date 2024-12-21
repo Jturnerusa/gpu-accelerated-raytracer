@@ -56,6 +56,15 @@ pub struct Camera {
     pub world: [[f32; 4]; 4],
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct Light {
+    pub transform: [[f32; 4]; 4],
+    pub color: [f32; 4],
+    pub power: f32,
+    pub p0: [u32; 3],
+}
+
 #[derive(Clone, Debug)]
 pub struct SceneDesc {
     pub objects: u32,
@@ -64,6 +73,7 @@ pub struct SceneDesc {
     pub vertices: u32,
     pub indices: u32,
     pub materials: u32,
+    pub lights: u32,
     pub blas_entries: Vec<BlasEntry>,
     pub textures: Vec<TextureDesc>,
 }
@@ -99,6 +109,7 @@ pub trait Scene {
         vertices: &mut [u8],
         indices: &mut [u8],
         materials: &mut [u8],
+        lights: &mut [u8],
         textures: &[wgpu::Texture],
     ) -> Result<(), Box<dyn std::error::Error>>;
 
@@ -148,6 +159,17 @@ impl Material {
             texture,
             has_texture,
             color,
+            p0: Default::default(),
+        }
+    }
+}
+
+impl Light {
+    pub fn new(transform: [[f32; 4]; 4], color: [f32; 4], power: f32) -> Self {
+        Self {
+            transform,
+            color,
+            power,
             p0: Default::default(),
         }
     }

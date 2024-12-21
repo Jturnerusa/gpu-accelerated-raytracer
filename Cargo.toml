@@ -12,7 +12,9 @@ serde = { version = "1.0.215", features = ["derive"] }
 serde_json = "1.0.133"
 clap = { version = "4.5.21", features = ["derive"] }
 tokio = { version = "1.41.1", features = ["full"] }
-gltf = { version = "1.4.1", features = ["KHR_materials_emissive_strength", "KHR_materials_ior"] }
+gltf = { version = "1.4.1", features = ["KHR_materials_emissive_strength",
+                                        "KHR_materials_ior",
+                                        "KHR_lights_punctual"] }
 image = { version = "0.25.5", features = ["png" , "jpeg", "webp"] }
 bytemuck = { version = "1.20.0", features = ["derive"] }
 memmap2 = "0.9.5"

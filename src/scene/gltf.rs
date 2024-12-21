@@ -9,7 +9,7 @@ use nalgebra::{Matrix4, Perspective3};
 
 use crate::scene::{BlasGeometry, Material, Object};
 
-use super::{BlasEntry, Camera, Mesh, Primitive, SceneDesc, TextureDesc, Vertex};
+use super::{BlasEntry, Camera, Light, Mesh, Primitive, SceneDesc, TextureDesc, Vertex};
 
 #[derive(Debug)]
 pub struct Error {
@@ -324,6 +324,52 @@ impl<'a> Scene<'a> {
         Ok(())
     }
 
+    fn load_lights(&self, mut lights: &mut [u8]) -> Result<(), Error> {
+        for node in self.document.nodes() {
+            match node.light() {
+                Some(light) => {
+                    let transform = bytemuck::cast_slice(
+                        Matrix4::new(
+                            node.transform().matrix()[0][0],
+                            node.transform().matrix()[1][0],
+                            node.transform().matrix()[2][0],
+                            node.transform().matrix()[3][0],
+                            node.transform().matrix()[0][1],
+                            node.transform().matrix()[1][1],
+                            node.transform().matrix()[2][1],
+                            node.transform().matrix()[3][1],
+                            node.transform().matrix()[0][2],
+                            node.transform().matrix()[1][2],
+                            node.transform().matrix()[2][2],
+                            node.transform().matrix()[3][2],
+                            node.transform().matrix()[0][3],
+                            node.transform().matrix()[1][3],
+                            node.transform().matrix()[2][3],
+                            node.transform().matrix()[3][3],
+                        )
+                        .as_slice(),
+                    )
+                    .try_into()
+                    .unwrap();
+
+                    lights
+                        .write_all(bytemuck::bytes_of(&Light::new(
+                            transform,
+                            [light.color()[0], light.color()[1], light.color()[2], 0.0],
+                            light.intensity(),
+                        )))
+                        .map_err(|e| Error {
+                            message: "failed to write light to staging buffer".to_string(),
+                            source: Some(Box::new(e)),
+                        })?
+                }
+                None => continue,
+            }
+        }
+
+        Ok(())
+    }
+
     fn load_textures(&self, queue: &wgpu::Queue, textures: &[wgpu::Texture]) -> Result<(), Error> {
         for (gltf_texture, gpu_texture) in self.document.textures().zip(textures) {
             match gltf_texture.source().source() {
@@ -531,6 +577,13 @@ impl<'a> Scene<'a> {
 
     fn material_count(&self) -> u32 {
         self.document.materials().len() as u32
+    }
+
+    fn light_count(&self) -> u32 {
+        self.document
+            .nodes()
+            .filter_map(|node| node.light())
+            .count() as u32
     }
 
     fn get_primitive_vertex_count(
@@ -760,12 +813,14 @@ impl<'data> super::Scene for Scene<'data> {
         vertices: &mut [u8],
         indices: &mut [u8],
         materials: &mut [u8],
+        lights: &mut [u8],
         textures: &[wgpu::Texture],
     ) -> Result<(), Box<dyn std::error::Error>> {
         self.load_meshes(meshes, primitives, vertices, indices)?;
         self.load_objects(objects)?;
         self.load_materials(materials)?;
         self.load_textures(queue, textures)?;
+        self.load_lights(lights)?;
 
         Ok(())
     }
@@ -813,6 +868,7 @@ impl<'data> super::Scene for Scene<'data> {
             vertices: self.vertex_count()?,
             indices: self.index_count()?,
             materials: self.material_count(),
+            lights: self.light_count(),
             blas_entries,
             textures: self.texture_descriptors()?,
         })
